@@ -16,6 +16,7 @@ This is the most important doc for feature work on the node. Read
 - [`commitChanges()` — serialization](#commitchanges--serialization)
 - [Context menus](#context-menus)
 - [Image upload path](#image-upload-path)
+- [Save/load & bundles](#saveload--bundles)
 - [Backend `execute()` pipeline](#backend-execute-pipeline)
 - [End-to-end dataflow](#end-to-end-dataflow)
 - [Lifecycle hooks](#lifecycle-hooks)
@@ -61,9 +62,10 @@ flowchart TD
 | `guideStrength` | number | per-image guide strength, default `1.0` |
 
 > **Image vs text is just `type` + presence of `imageFile`/`imageB64`.** A text
-> segment is a segment with `type: "text"` and no image fields. This is exactly the
-> seam for "convert image↔text clip" features: flip `type` and add/remove the image
-> fields, then `commitChanges()`.
+> segment is a segment with `type: "text"` and no image fields. This is the seam the
+> right-click "convert image↔text clip" items use: `_attachImageToSegment`
+> (text→image, also powers "replace image") and `_convertSegmentToText` (image→text)
+> flip `type` and add/remove the image fields, then `commitChanges()`.
 
 ### Audio segments — `timeline.audioSegments[]`
 
@@ -88,14 +90,20 @@ flowchart TD
   ],
   "audioSegments": [
     { "id": "...", "start": 0, "length": 120, "trimStart": 0, "audioFile": "vo.mp3" }
-  ]
+  ],
+  "globalPromptVisible": true
 }
 ```
 
-> **Portability caveat (relevant to any export/import feature):** a serialized
-> timeline references media by `imageFile`/`audioFile` into the ComfyUI input dir.
-> It is **not self-contained** — moving the JSON to another machine breaks the media
-> links unless the files are copied too, or real base64 is embedded.
+> **`globalPromptVisible`** records the "Use Global Prompt" enabled state. ComfyUI
+> does not serialize a widget's visibility natively, so this flag is how it survives a
+> reload — see [Save/load & bundles](#saveload--bundles) and
+> [Lifecycle hooks](#lifecycle-hooks).
+>
+> **Portability caveat:** the plain JSON references media by `imageFile`/`audioFile`
+> into the ComfyUI input dir, so it is **not self-contained** — moving the JSON alone
+> breaks the media links. The **Bundle** export ([below](#saveload--bundles)) packages
+> the media too and stages it back into `input/<bundleName>/` on load to solve this.
 
 ## The widget data bus
 
@@ -104,14 +112,17 @@ hidden string widgets (constants `HIDDEN_WIDGET_NAMES`):
 
 | Widget | Format | Produced from |
 |--------|--------|---------------|
-| `timeline_data` | JSON (full state) | `this.timeline` minus `imgObj` |
+| `timeline_data` | JSON (full state + `globalPromptVisible`) | `this.timeline` minus `imgObj` |
 | `local_prompts` | `" | "`-joined | one entry per contiguous segment slot |
 | `segment_lengths` | `","`-joined | pixel lengths, gaps absorbed, clipped to duration |
 | `guide_strength` | `","`-joined | per **non-text** segment strength (`.toFixed(2)`) |
 | `use_custom_audio` | boolean widget | toolbar toggle |
 
 `global_prompt` is a normal (optionally hidden) widget, toggled via the settings
-menu "Use Global Prompt" checkbox.
+menu "Use Global Prompt" checkbox (`_setGlobalPromptVisible()`). Its enabled state is
+not natively serialized by ComfyUI, so `commitChanges()` persists it as
+`globalPromptVisible` inside `timeline_data` and `_restoreGlobalPromptVisibility()`
+re-applies it on load.
 
 ## `commitChanges()` — serialization
 
@@ -125,7 +136,7 @@ serialization choke point. It:
    to `durationFrames`. (This is why on-screen positions and the emitted
    `segment_lengths` differ — the timeline is visual, the relay needs a gapless
    partition.)
-3. Writes `timeline_data` = `JSON.stringify({ segments (minus imgObj), audioSegments })`.
+3. Writes `timeline_data` = `JSON.stringify({ segments (minus imgObj), audioSegments, globalPromptVisible })`.
 4. Writes `local_prompts` = prompts joined by `" | "`.
 5. Writes `segment_lengths` = contiguous lengths joined by `","`.
 6. Writes `guide_strength` = strengths of non-text segments joined by `","`.
@@ -148,7 +159,9 @@ flowchart TD
     hit -->|"no (empty track)"| sgcm["showGapContextMenu(gap)"]
 
     scm --> img{"image segment?"}
-    img -->|yes| imgops["Copy / Save / Open Image"]
+    img -->|yes| imgops["Copy / Save / Open Image<br/>Replace Image<br/>Remove Image (→ Text)"]
+    scm --> txt{"text clip?"}
+    txt -->|yes| addimg["Add Image (→ Image)"]
     scm --> prompt{"not audio?"}
     prompt -->|yes| copyp["Copy Prompt"]
     scm --> always["Copy Segment<br/>Paste & Replace (if clipboard)<br/>Delete"]
@@ -162,7 +175,9 @@ flowchart TD
   `<button class="pr-gap-menu-btn">` elements appended to a `div.pr-gap-menu`. Each
   button sets `.onclick`, mutates `this.timeline`, calls `commitChanges()`, then
   `dismissContextMenu()`. `isImage = trackType !== "audio" && trackType !== "text" && seg.imageB64`.
-  This is where "Replace image / Remove image / Add image" items belong.
+  Image clips show **Replace Image…** and **Remove Image (→ Text)**; text clips show
+  **Add Image (→ Image)…**, calling `_attachImageToSegment` / `_convertSegmentToText`
+  via `_pickImageForSegment` (see [the data model note](#the-timeline-data-model)).
 - **`showGapContextMenu(clientX, clientY, gap)`** — empty-track menu. Offers
   "Text Segment" (`addSegmentInGap(...,"text")`) and "Image Segment" (file picker →
   `handleImageUpload(files, gap.frameStart, gapLength)`), plus paste.
@@ -195,9 +210,76 @@ flowchart LR
 - Other entry points: toolbar Upload button, drag-and-drop (`drop` listener),
   paste (`handlePaste`), and the gap menu "Image Segment".
 
-> To **replace** an image on an existing segment, the minimal path is: run the same
-> upload, then assign `seg.imageFile`/`seg.imageB64`/`seg.imgObj` on the existing
-> segment instead of pushing a new one, and `commitChanges()`.
+> **Replacing/attaching** an image on an existing segment is implemented by
+> `_attachImageToSegment(file, seg)`: the same `/upload/image`, then assign
+> `seg.imageFile`/`seg.imageB64`/`seg.imgObj` onto the existing segment (and set
+> `type="image"`) instead of pushing a new one, then `commitChanges()`.
+
+## Save/load & bundles
+
+The settings (gear) menu has two **Save/Load** rows that serialize the whole timeline
+(plus every node setting) to a file and restore it. All frontend except the bundle
+archive, which is backed by hardened routes in
+[`ltx_director_bundle.py`](../ltx_director_bundle.py).
+
+**Payload shape** (`_buildSerializationPayload()`):
+
+```json
+{
+  "format": "ltx-director-timeline",
+  "version": 1,
+  "timeline": { "segments": [], "audioSegments": [], "globalPromptVisible": true },
+  "settings": {
+    "global_prompt": "...", "global_prompt_visible": true,
+    "duration_frames": 120, "duration_seconds": 5, "frame_rate": 24,
+    "display_mode": "seconds", "epsilon": 0.001, "divisible_by": 32,
+    "img_compression": 18, "custom_width": 0, "custom_height": 0,
+    "resize_method": "maintain aspect ratio", "use_custom_audio": false
+  }
+}
+```
+
+`timeline` is the parsed `timeline_data` widget; the derived widgets
+(`local_prompts`/`segment_lengths`/`guide_strength`) are **not** stored —
+`_applyLoadedPayload()` rebuilds them by calling `commitChanges()` after restoring.
+`_applyLoadedPayload()` is the single apply path for both flavours and mirrors the
+`onConfigure` restore (set widgets → restore global-prompt value + visibility →
+`parseInitial` → `loadImages` → `commitChanges` → `render`).
+
+| Flavour | Save / Load | Media | Self-contained? |
+|---------|-------------|-------|-----------------|
+| **Timeline File** | `saveTimelineToFile` / `loadTimelineFromFile` | referenced by `imageFile`/`audioFile` | No |
+| **Bundle (zip)** | `saveBundleToFile` / `loadBundleFromFile` | packaged in the zip | Yes |
+
+```mermaid
+flowchart LR
+    subgraph Save
+      ed1["editor state"] --> bp["_buildSerializationPayload()"]
+      bp --> jf["Timeline File<br/>(.json download)"]
+      bp --> sb["POST /ltx_director/save_bundle"]
+      sb --> zip["zip: timeline.json<br/>+ media/&lt;rel&gt;"]
+    end
+    subgraph Load
+      jin[".json"] --> ap["_applyLoadedPayload()"]
+      zin[".zip"] --> lb["POST /ltx_director/load_bundle"]
+      lb --> stage["stage media →<br/>input/&lt;bundleName&gt;/"]
+      stage --> ap
+      ap --> commit["commitChanges() + render()"]
+    end
+```
+
+**Bundle routes** (`ltx_director_bundle.py`):
+
+- `POST /ltx_director/save_bundle` — reads each media reference from the input dir
+  (rejecting anything that escapes it via `realpath` + `commonpath`), zips
+  `timeline.json` + `media/<rel>`, returns the archive.
+- `POST /ltx_director/load_bundle` — extracts `media/*` into `input/<bundleName>/`
+  (sanitised name; per-entry zip-slip containment assertion; media-extension
+  allow-list), re-points each clip's `imageFile`/`audioFile` to `<bundleName>/<rel>`,
+  and returns the manifest for `_applyLoadedPayload()`. Existing files are overwritten.
+
+See the [security note](architecture.md#http-routes-server-side) for the hardening
+pattern these routes follow.
 
 ## Backend `execute()` pipeline
 
@@ -289,9 +371,12 @@ at the bottom of `ltx_director.js`:
 - **`onNodeCreated`** — appends missing widgets (`APPENDED_WIDGET_DEFAULTS`), hides
   the bus widgets, hides `global_prompt` by default, sets default node width 1000,
   creates the DOM container via `addDOMWidget("timeline_ui", ...)`, then constructs
-  `new TimelineEditor(...)` on a `setTimeout(0)`.
+  `new TimelineEditor(...)` on a `setTimeout(0)`. The constructor restores
+  `globalPromptVisible` (via `_restoreGlobalPromptVisibility()`) **before** its first
+  `commitChanges()`, so the default-hidden state can't overwrite the saved flag.
 - **`onConfigure(info)`** — after a workflow loads, re-parses `timeline_data`,
-  `loadImages()`, clamps selection, re-renders. This is the **restore** path.
+  restores global-prompt visibility, `loadImages()`, clamps selection, re-renders.
+  This is the **restore** path.
 - **`onRemoved`** — `this._timelineEditor?.destroy()`.
 
 ## Pixel space vs latent space
@@ -322,3 +407,8 @@ at the bottom of `ltx_director.js`:
 - **Force-refresh trick**: several settings toggles double-toggle `display_mode` to
   force ComfyUI to recompute the node — copy that pattern if a widget visibility
   change doesn't visually take effect.
+- **Widget visibility isn't serialized by ComfyUI.** The global-prompt enabled state
+  survives reloads only because `commitChanges()` writes `globalPromptVisible` into
+  `timeline_data` and `_restoreGlobalPromptVisibility()` re-applies it in the editor
+  constructor and `onConfigure`. Persisting any other per-widget visibility needs the
+  same treatment.

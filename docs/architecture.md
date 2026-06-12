@@ -157,5 +157,15 @@ WhatDreamsCost-ComfyUI/
   `os.path.basename` strips directory components and a `commonpath` check confirms
   the resolved path stays inside the input dir.
 
+`ltx_director_bundle.py` registers two more for the LTX Director timeline **bundle**
+(portable zip) feature (see [ltx-director.md](ltx-director.md#saveload--bundles)):
+
+- `POST /ltx_director/save_bundle` — zips `timeline.json` + the referenced media into
+  a downloadable archive. Hardened: each media path is resolved with `realpath` and a
+  `commonpath` check rejects anything outside the input dir.
+- `POST /ltx_director/load_bundle` — extracts an uploaded zip's `media/*` into
+  `input/<bundleName>/`. Hardened: sanitised bundle name, a media-extension
+  allow-list, and a **per-entry zip-slip containment assertion** before each write.
+
 These hardening patterns are the reference for any new route in this package — see
 the security notes in [the skill](../.claude/skills/whatdreamscost-comfyui/SKILL.md).

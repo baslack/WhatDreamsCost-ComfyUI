@@ -6,11 +6,13 @@ description: >-
   Sequencer/Keyframer, Multi Image Loader, Speech Length Calculator, Load
   Audio/Video UI). Use this skill whenever working in this repo — adding or
   changing nodes, editing the timeline editor or its right-click/context menus,
+  converting clips between image and text, saving/loading or bundling timelines,
   touching the timeline_data / local_prompts / segment_lengths / guide_strength
   serialization, the prompt-relay attention patching, the guide_data channel, the
-  audio compositing, or the Load Video UI HTTP routes. Trigger it for any mention
-  of LTX Director, the timeline, clips/segments, prompt relay, guide data, or any
-  file in this package (ltx_director.py/js, prompt_relay.py, patches.py, etc.) —
+  audio compositing, or the Load Video UI / timeline-bundle HTTP routes. Trigger it
+  for any mention of LTX Director, the timeline, clips/segments, prompt relay, guide
+  data, or any file in this package (ltx_director.py/js, ltx_director_bundle.py,
+  prompt_relay.py, patches.py, etc.) —
   even when the request doesn't name the skill. Reach for it before exploring the
   code from scratch; it points at hand-maintained docs that already map the
   dataflows.
@@ -61,7 +63,7 @@ The JS editor never passes tensors to Python. It serializes editor state into
 
 | Widget | Format | Source |
 |--------|--------|--------|
-| `timeline_data` | JSON `{segments, audioSegments}` | full editor state (minus `imgObj`) |
+| `timeline_data` | JSON `{segments, audioSegments, globalPromptVisible}` | full editor state (minus `imgObj`) |
 | `local_prompts` | `" | "`-joined | per contiguous segment |
 | `segment_lengths` | `","`-joined | pixel lengths, gaps absorbed, clipped to duration |
 | `guide_strength` | `","`-joined | per **non-text** segment |
@@ -72,21 +74,33 @@ the backend sees stale data. Segments are image-or-text by `type` + presence of
 `imageFile`/`imageB64`; audio lives in a separate `audioSegments` array. Full schema
 in [`docs/ltx-director.md`](../../../docs/ltx-director.md#the-timeline-data-model).
 
+`timeline_data` also carries `globalPromptVisible`: ComfyUI does **not** natively
+serialize a widget's `options.hidden`, so the "Use Global Prompt" enabled state is
+persisted here by `commitChanges()` and restored via `_restoreGlobalPromptVisibility()`
+in the editor constructor (before its own `commitChanges` can overwrite it) and in
+`onConfigure`. `_setGlobalPromptVisible()` is the one place that flips that visibility.
+
 ## Common task → where to look
 
 - **Right-click / context menu items** → `showContextMenu()` (per-segment) and
   `showGapContextMenu()` (empty track) in `ltx_director.js` (~line 2943+). Reuse the
   `pr-gap-menu` / `pr-gap-menu-btn` CSS classes. Mutate `this.timeline`, then
   `commitChanges()`.
-- **Convert a clip image↔text** → flip `seg.type` and add/remove
-  `imageFile`/`imageB64`/`imgObj`; `commitChanges()`. (`guide_strength` is non-text
-  only, so the alignment shifts automatically.)
-- **Replace an image on a clip** → run `handleImageUpload`-style `/upload/image`,
-  then assign the result onto the existing segment instead of pushing a new one.
-- **Export/import a timeline** → the source of truth is the `timeline_data` JSON.
-  Media is referenced by `imageFile`/`audioFile` into the ComfyUI input dir, so a
-  raw export is **not self-contained** — copy/embed media for portability. The
-  `global_prompt` is a separate node widget, not part of `timeline_data`.
+- **Convert a clip image↔text / replace an image** → implemented as right-click items
+  via `_attachImageToSegment` (upload + attach onto the existing segment; sets
+  `type="image"`), `_convertSegmentToText` (strip `imageFile`/`imageB64`/`imgObj`,
+  set `type="text"`), and `_pickImageForSegment`, wired in `showContextMenu`. They
+  preserve `start`/`length`/`prompt`; `guide_strength` re-aligns automatically because
+  it is non-text only.
+- **Save/load or bundle a timeline** → buttons in the settings (gear) menu.
+  `_buildSerializationPayload()` produces `{format, version, timeline, settings}`
+  (timeline + all node settings incl. `global_prompt` value & visibility);
+  `_applyLoadedPayload()` is the single apply path (mirrors `onConfigure`).
+  - *Timeline File* (`saveTimelineToFile`/`loadTimelineFromFile`) — plain JSON;
+    media referenced by `imageFile`/`audioFile`, so **not** self-contained.
+  - *Bundle* (`saveBundleToFile`/`loadBundleFromFile`) — zip of the JSON **plus** the
+    media, staged on load into `input/<bundleName>/`; the self-contained option for
+    backup/redistribution. Backed by `ltx_director_bundle.py` (see routes below).
 - **Prompt-relay / attention behavior** → `_encode_relay()` in `ltx_director.py` and
   [`docs/prompt-relay.md`](../../../docs/prompt-relay.md).
 - **Guide images into latent** → `LTXDirectorGuide` reads the `guide_data` custom
@@ -99,7 +113,11 @@ in [`docs/ltx-director.md`](../../../docs/ltx-director.md#the-timeline-data-mode
 normalize with `os.path.realpath`, allow-list extensions, strip path components with
 `os.path.basename`, and confirm containment with `os.path.commonpath`. Any new route
 that serves or writes files must do the same — these guard against arbitrary
-file read/write. See [`docs/architecture.md`](../../../docs/architecture.md#http-routes-server-side).
+file read/write. `ltx_director_bundle.py` (`POST /ltx_director/{save,load}_bundle`)
+extends the pattern to archive extraction: a sanitised bundle name, a media-extension
+allow-list, and a **per-zip-entry containment assertion** (zip-slip defence) before
+writing anything into `input/<bundleName>/`. Mirror it for any future
+unzip/extract-to-disk route. See [`docs/architecture.md`](../../../docs/architecture.md#http-routes-server-side).
 
 ## Conventions
 
