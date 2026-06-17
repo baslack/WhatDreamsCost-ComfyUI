@@ -460,6 +460,10 @@ class LTXDirector(io.ComfyNode):
                     "img_compression", default=18, min=0, max=100, step=1, optional=True,
                     tooltip="H.264 CRF compression to apply to each guide image. 0 = no compression, higher = more artefacts.",
                 ),
+                io.Int.Input(
+                    "video_guide_stride", default=4, min=1, max=64, step=1, optional=True,
+                    tooltip="Use every Nth extracted latent frame as a guide for video segments. 1 = every frame (dense, causes hard stops), 4 = every 4th latent frame (~1.3 s apart at 24 fps, recommended). Higher values give the model more freedom to generate smooth motion.",
+                ),
             ],
             outputs=[
                 io.Model.Output(display_name="model"),
@@ -478,7 +482,7 @@ class LTXDirector(io.ComfyNode):
                 frame_rate=24, display_mode="seconds",
                 custom_width=768, custom_height=512, resize_method="maintain aspect ratio",
                 divisible_by=32, img_compression=0, audio_vae=None, optional_latent=None,
-                use_custom_audio=False, audio_blend_secs=1.0) -> io.NodeOutput:
+                use_custom_audio=False, audio_blend_secs=1.0, video_guide_stride=4) -> io.NodeOutput:
 
         # --- Build guide_data from image segments FIRST (to derive output dimensions) ---
         guide_data = {"images": [], "insert_frames": [], "strengths": [], "frame_rate": frame_rate}
@@ -523,9 +527,14 @@ class LTXDirector(io.ComfyNode):
                 strength = strengths[idx] if idx < len(strengths) else 1.0
 
                 if seg.get("type") == "video":
-                    # Expand one video segment into one guide entry per extracted frame.
-                    # All frames share the segment's single guide_strength value.
-                    for frame in seg.get("frames", []):
+                    # Expand one video segment into guide entries, sampling every
+                    # video_guide_stride-th latent frame.  Using every frame (stride=1)
+                    # leaves the model no freedom to generate smooth motion and causes
+                    # hard stops at each guide position.
+                    stride = max(1, int(video_guide_stride))
+                    for fi, frame in enumerate(seg.get("frames", [])):
+                        if fi % stride != 0:
+                            continue
                         abs_frame = int(seg["start"]) + int(frame.get("insertFrame", 0))
                         if abs_frame >= duration_frames:
                             continue
