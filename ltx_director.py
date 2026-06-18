@@ -409,6 +409,10 @@ class LTXDirector(io.ComfyNode):
                     "use_custom_audio", default=False, optional=True,
                     tooltip="Toggle between using timeline audio (ON) and generating audio from scratch (OFF).",
                 ),
+                io.Float.Input(
+                    "audio_blend_secs", default=1.0, min=0.0, max=10.0, step=0.1, optional=True,
+                    tooltip="Seconds over which the custom audio fades into model-generated audio at each segment boundary. 0 = hard cut.",
+                ),
                 io.String.Input(
                     "local_prompts", multiline=True, default="",
                     tooltip="Auto-populated from the timeline editor.",
@@ -456,6 +460,10 @@ class LTXDirector(io.ComfyNode):
                     "img_compression", default=18, min=0, max=100, step=1, optional=True,
                     tooltip="H.264 CRF compression to apply to each guide image. 0 = no compression, higher = more artefacts.",
                 ),
+                io.Int.Input(
+                    "video_guide_stride", default=1, min=1, max=64, step=1, optional=True,
+                    tooltip="Use every Nth extracted latent frame as a guide for video segments. 1 = every latent frame. Increase to let the model interpolate more freely between anchors (pair with lower guide_strength on the segment to avoid hard stops).",
+                ),
             ],
             outputs=[
                 io.Model.Output(display_name="model"),
@@ -474,7 +482,8 @@ class LTXDirector(io.ComfyNode):
                 frame_rate=24, display_mode="seconds",
                 custom_width=768, custom_height=512, resize_method="maintain aspect ratio",
                 divisible_by=32, img_compression=0, audio_vae=None, optional_latent=None,
-                use_custom_audio=False) -> io.NodeOutput:
+                use_custom_audio=False, audio_blend_secs=1.0,
+                video_guide_stride=1) -> io.NodeOutput:
 
         # --- Build guide_data from image segments FIRST (to derive output dimensions) ---
         guide_data = {"images": [], "insert_frames": [], "strengths": [], "frame_rate": frame_rate}
@@ -483,8 +492,8 @@ class LTXDirector(io.ComfyNode):
             tdata = json.loads(timeline_data) if timeline_data else {}
             img_segs = [
                 s for s in tdata.get("segments", [])
-                if s.get("type", "image") == "image"
-                and (s.get("imageFile") or s.get("imageB64"))
+                if s.get("type", "image") in ("image", "video")
+                and (s.get("imageFile") or s.get("imageB64") or s.get("frames"))
                 and int(s.get("start", 0)) < duration_frames  # exclude segments fully outside duration
             ]
             img_segs.sort(key=lambda s: s["start"])
@@ -493,46 +502,54 @@ class LTXDirector(io.ComfyNode):
             if guide_strength.strip():
                 strengths = [float(x.strip()) for x in guide_strength.split(",") if x.strip()]
 
-            for idx, seg in enumerate(img_segs):
-                tensor = _load_image_tensor(seg)
+            def snap(val, div):
+                return max(div, (val // div) * div)
 
-                # Apply resize
+            def _process_tensor(tensor):
+                """Resize + compress a [1,H,W,3] tensor using the execute() parameters."""
                 src_h, src_w = tensor.shape[1], tensor.shape[2]
-
-                def snap(val, div):
-                    return max(div, (val // div) * div)
-
                 if custom_width > 0 and custom_height > 0:
-                    # Both dimensions set — apply selected resize_method (pad, crop, stretch, maintain AR)
                     tensor = _resize_image(tensor, custom_width, custom_height, resize_method, divisible_by)
                 elif custom_width > 0:
-                    # Width only — scale height from AR, snap both, then resize to exact dimensions
                     tgt_w = snap(custom_width, divisible_by)
                     tgt_h = snap(int(src_h * tgt_w / src_w), divisible_by)
                     tensor = _resize_image(tensor, tgt_w, tgt_h, "stretch to fit", divisible_by)
                 elif custom_height > 0:
-                    # Height only — scale width from AR, snap both, then resize to exact dimensions
                     tgt_h = snap(custom_height, divisible_by)
                     tgt_w = snap(int(src_w * tgt_h / src_h), divisible_by)
                     tensor = _resize_image(tensor, tgt_w, tgt_h, "stretch to fit", divisible_by)
                 else:
-                    # Both zero — keep original dimensions, just snap to divisible_by
                     tensor = _resize_image(tensor, src_w, src_h, "maintain aspect ratio", divisible_by)
-
-
-                # Apply compression
                 if img_compression > 0:
                     tensor = _compress_image(tensor, img_compression)
+                return tensor
 
-                # Record dimensions of the first processed image for latent generation
-                if idx == 0:
-                    derived_h = tensor.shape[1]
-                    derived_w = tensor.shape[2]
-
+            for idx, seg in enumerate(img_segs):
                 strength = strengths[idx] if idx < len(strengths) else 1.0
-                guide_data["images"].append(tensor)
-                guide_data["insert_frames"].append(int(seg["start"]))
-                guide_data["strengths"].append(float(strength))
+
+                if seg.get("type") == "video":
+                    stride = max(1, int(video_guide_stride))
+                    for fi, frame in enumerate(seg.get("frames", [])):
+                        if fi % stride != 0:
+                            continue
+                        abs_frame = int(seg["start"]) + int(frame.get("insertFrame", 0))
+                        if abs_frame >= duration_frames:
+                            continue
+                        tensor = _load_image_tensor(frame)
+                        tensor = _process_tensor(tensor)
+                        if not guide_data["images"]:
+                            derived_h, derived_w = tensor.shape[1], tensor.shape[2]
+                        guide_data["images"].append(tensor)
+                        guide_data["insert_frames"].append(abs_frame)
+                        guide_data["strengths"].append(float(strength))
+                else:
+                    tensor = _load_image_tensor(seg)
+                    tensor = _process_tensor(tensor)
+                    if not guide_data["images"]:
+                        derived_h, derived_w = tensor.shape[1], tensor.shape[2]
+                    guide_data["images"].append(tensor)
+                    guide_data["insert_frames"].append(int(seg["start"]))
+                    guide_data["strengths"].append(float(strength))
             
             # If no images were loaded from the timeline, create a dummy image at strength 0
             # to prevent artifacts in text-to-video mode.
@@ -619,22 +636,57 @@ class LTXDirector(io.ComfyNode):
                         
                         if latent_samples.numel() == 0:
                             raise ValueError("Encoded audio latent is empty (0 elements).")
-                        
-                        # 2. Create solid mask with value 0.0 (0 means keep/use conditioning, 1 means generate noise)
-                        mask = torch.full(
-                            (1, latent_samples.shape[-2], latent_samples.shape[-1]), 
-                            0.0, 
-                            dtype=torch.float32, 
-                            device=comfy.model_management.intermediate_device()
+
+                        # 2. Per-position noise mask — 0.0 where audio segments cover the
+                        # timeline (keep the encoded audio), 1.0 everywhere else (let the
+                        # model generate audio freely).  A flat 0.0 mask would force the
+                        # model to reproduce silence for uncovered regions, producing no audio
+                        # after the clip ends.
+                        num_audio_latents = latent_samples.shape[-2]
+                        audio_freq = latent_samples.shape[-1]
+                        dev = comfy.model_management.intermediate_device()
+                        mask = torch.ones(
+                            (1, 1, num_audio_latents, audio_freq),
+                            dtype=torch.float32, device=dev,
                         )
-                        
+                        audio_latent_fps = num_audio_latents / (ltxv_length / float(frame_rate))
+                        blend_frames = max(0, int(round(float(audio_blend_secs) * audio_latent_fps)))
+                        try:
+                            tdata = json.loads(timeline_data)
+                            for seg in tdata.get("audioSegments", []):
+                                seg_start = float(seg.get("start", 0))
+                                seg_len   = float(seg.get("length", 0))
+                                lat_s = int(seg_start / float(frame_rate) * audio_latent_fps)
+                                lat_e = min(
+                                    int(math.ceil((seg_start + seg_len) / float(frame_rate) * audio_latent_fps)),
+                                    num_audio_latents,
+                                )
+                                if lat_e <= lat_s:
+                                    continue
+                                # Fully conditioned core
+                                mask[:, :, lat_s:lat_e, :] = 0.0
+                                # Trailing ramp: taper from 0→1 over the last
+                                # blend_frames positions so the model can blend
+                                # smoothly into freely-generated audio rather
+                                # than cutting hard at the segment boundary.
+                                if blend_frames > 0:
+                                    ramp_s = max(lat_s, lat_e - blend_frames)
+                                    ramp_len = lat_e - ramp_s
+                                    for i in range(ramp_len):
+                                        mask[:, :, ramp_s + i, :] = (i + 1) / (ramp_len + 1)
+                        except Exception:
+                            mask.fill_(0.0)  # fall back to full conditioning
+
                         # 3. Set Latent Noise Mask
                         audio_latent = {
                             "samples": latent_samples,
                             "type": "audio",
-                            "noise_mask": mask.reshape((-1, 1, mask.shape[-2], mask.shape[-1]))
+                            "noise_mask": mask,
                         }
-                        log.info("[PromptRelay] Generated custom audio latent with noise mask (value=0.0).")
+                        log.info(
+                            "[PromptRelay] Custom audio latent: %d/%d latent frames conditioned.",
+                            int((mask == 0.0).all(dim=-1).sum()), num_audio_latents,
+                        )
                     else:
                         raise ValueError("No audio waveform to encode.")
                 except Exception as e:
