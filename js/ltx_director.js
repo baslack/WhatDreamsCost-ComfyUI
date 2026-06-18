@@ -3882,6 +3882,8 @@ class TimelineEditor {
         custom_height: getVal("custom_height"),
         resize_method: getVal("resize_method"),
         use_custom_audio: getVal("use_custom_audio"),
+        audio_blend_secs: getVal("audio_blend_secs"),
+        video_guide_stride: getVal("video_guide_stride"),
       },
     };
   }
@@ -3922,6 +3924,8 @@ class TimelineEditor {
     setVal("custom_height", s.custom_height);
     setVal("resize_method", s.resize_method);
     setVal("use_custom_audio", s.use_custom_audio);
+    setVal("audio_blend_secs", s.audio_blend_secs);
+    setVal("video_guide_stride", s.video_guide_stride);
 
     const gp = node.widgets?.find(w => w.name === "global_prompt");
     if (gp && s.global_prompt !== undefined) gp.value = s.global_prompt;
@@ -3938,6 +3942,12 @@ class TimelineEditor {
         const idx = seg.imageFile.lastIndexOf("/");
         const sub = idx >= 0 ? seg.imageFile.slice(0, idx) : "";
         const fname = idx >= 0 ? seg.imageFile.slice(idx + 1) : seg.imageFile;
+        seg.imageB64 = api.apiURL(`/view?filename=${encodeURIComponent(fname)}&type=input&subfolder=${encodeURIComponent(sub)}`);
+      }
+      if (seg.type === "video" && seg.videoFile && !seg.imageB64) {
+        const idx = seg.videoFile.lastIndexOf("/");
+        const sub = idx >= 0 ? seg.videoFile.slice(0, idx) : "";
+        const fname = idx >= 0 ? seg.videoFile.slice(idx + 1) : seg.videoFile;
         seg.imageB64 = api.apiURL(`/view?filename=${encodeURIComponent(fname)}&type=input&subfolder=${encodeURIComponent(sub)}`);
       }
     }

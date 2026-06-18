@@ -32,6 +32,7 @@ from aiohttp import web
 _BUNDLE_MEDIA_EXTS = {
     ".png", ".jpg", ".jpeg", ".webp", ".gif", ".bmp", ".tiff", ".tif",
     ".mp3", ".wav", ".flac", ".ogg", ".m4a", ".aac", ".opus",
+    ".mp4", ".mov", ".avi", ".mkv", ".webm",
 }
 
 # Anything outside this set is collapsed to "_" when deriving a bundle subfolder name.
@@ -69,6 +70,10 @@ def _collect_media_refs(timeline):
         f = seg.get("imageFile")
         if f:
             refs.append(f)
+        if seg.get("type") == "video":
+            vf = seg.get("videoFile")
+            if vf:
+                refs.append(vf)
     for seg in (timeline.get("audioSegments") or []):
         f = seg.get("audioFile")
         if f:
@@ -169,6 +174,9 @@ async def load_bundle(request):
     for seg in (timeline.get("segments") or []):
         if seg.get("imageFile"):
             seg["imageFile"] = "%s/%s" % (bundle_name, seg["imageFile"].replace("\\", "/"))
+            seg.pop("imageB64", None)
+        if seg.get("type") == "video" and seg.get("videoFile"):
+            seg["videoFile"] = "%s/%s" % (bundle_name, seg["videoFile"].replace("\\", "/"))
             seg.pop("imageB64", None)
     for seg in (timeline.get("audioSegments") or []):
         if seg.get("audioFile"):
