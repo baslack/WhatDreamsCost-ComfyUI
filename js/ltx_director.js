@@ -10516,6 +10516,78 @@ class TimelineEditor {
     }
   }
 
+  // --- Portable bundle (zip): timeline JSON + its media ---
+  // Reuses the exact payload from _getTimelineSavePayload() and, on import, feeds the
+  // re-pointed manifest back through _applyLoadedTimeline() so there is a single
+  // serialize/hydrate code path shared with plain Save/Load.
+
+  async handleExportBundle() {
+    let payloadObj;
+    try {
+      payloadObj = JSON.parse(this._getTimelineSavePayload());
+    } catch (e) {
+      console.error("Failed to build bundle payload:", e);
+      return;
+    }
+    payloadObj.bundleName = "ltx_director_bundle";
+
+    try {
+      const resp = await api.fetchApi("/ltx_director/save_bundle", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(payloadObj),
+      });
+      if (resp.status !== 200) {
+        console.error("Export bundle failed:", resp.status);
+        alert("Failed to export bundle. See console for details.");
+        return;
+      }
+      const missing = resp.headers.get("X-Bundle-Missing");
+      const blob = await resp.blob();
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = "ltx_director_bundle.zip";
+      a.click();
+      setTimeout(() => URL.revokeObjectURL(url), 0);
+      if (missing) {
+        alert(`Bundle exported, but ${missing} media file(s) could not be found and were skipped.`);
+      }
+      this.dismissSettingsMenu();
+    } catch (e) {
+      console.error("Export bundle error:", e);
+      alert("Failed to export bundle. See console for details.");
+    }
+  }
+
+  async handleImportBundle() {
+    const input = document.createElement("input");
+    input.type = "file";
+    input.accept = ".zip,application/zip";
+    input.onchange = async (e) => {
+      const file = e.target.files?.[0];
+      if (!file) return;
+      try {
+        const body = new FormData();
+        body.append("bundle", file);
+        const resp = await api.fetchApi("/ltx_director/load_bundle", { method: "POST", body });
+        if (resp.status !== 200) {
+          console.error("Import bundle failed:", resp.status);
+          alert("Failed to import bundle. See console for details.");
+          return;
+        }
+        const data = await resp.json();
+        // The manifest is the same shape as a saved timeline file, so reuse the loader.
+        this._applyLoadedTimeline(JSON.stringify(data.payload), null);
+        this.dismissSettingsMenu();
+      } catch (err) {
+        console.error("Import bundle error:", err);
+        alert("Failed to import bundle. See console for details.");
+      }
+    };
+    input.click();
+  }
+
   _makeSettingRow(label, inputEl) {
     const row = document.createElement("div");
     row.className = "pr-settings-row";
@@ -10576,6 +10648,23 @@ class TimelineEditor {
     btnLoad.textContent = "Load Timeline";
     btnLoad.addEventListener("click", () => this.handleLoadTimeline());
     gridContainer.appendChild(btnLoad);
+
+    // Portable bundle: the timeline JSON packaged with its actual media, so it can be
+    // backed up or shared and restored on a fresh install. Layered on top of the plain
+    // Save/Load above (which reference media by filename only).
+    const btnExportBundle = document.createElement("button");
+    btnExportBundle.className = "pr-settings-toggle-btn";
+    btnExportBundle.textContent = "Export Bundle";
+    btnExportBundle.title = "Download a .zip containing the timeline and all its media";
+    btnExportBundle.addEventListener("click", () => this.handleExportBundle());
+    gridContainer.appendChild(btnExportBundle);
+
+    const btnImportBundle = document.createElement("button");
+    btnImportBundle.className = "pr-settings-toggle-btn";
+    btnImportBundle.textContent = "Import Bundle";
+    btnImportBundle.title = "Load a .zip bundle, staging its media into the input folder";
+    btnImportBundle.addEventListener("click", () => this.handleImportBundle());
+    gridContainer.appendChild(btnImportBundle);
 
     // --- Show/Hide on Node Toggle ---
     const toggleBtn = document.createElement("button");
