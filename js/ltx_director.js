@@ -9357,6 +9357,70 @@ class TimelineEditor {
     }
   }
 
+  // --- Clip Type Conversion (image <-> text, in place) ---
+  // Upload an image and attach it to an existing main-track segment, turning it into an
+  // image clip while preserving start/length/prompt. Follows the same /upload/image +
+  // "whatdreamscost" subfolder convention used by Replace with... above.
+  async _attachImageToSegment(file, seg) {
+    if (!file || !file.type || !file.type.startsWith("image/") || !seg) return;
+    try {
+      const body = new FormData();
+      body.append("image", file);
+      body.append("subfolder", "whatdreamscost");
+      const resp = await api.fetchApi("/upload/image", { method: "POST", body });
+      if (resp.status !== 200) return;
+
+      const data = await resp.json();
+      const filename = data.name;
+      const subfolder = data.subfolder || "";
+      const imageFile = subfolder ? subfolder + "/" + filename : filename;
+      const imgUrl = api.apiURL(`/view?filename=${encodeURIComponent(filename)}&type=input&subfolder=${encodeURIComponent(subfolder)}`);
+
+      const img = new Image();
+      img.onload = () => {
+        seg.imageFile = imageFile;
+        seg.imageB64 = imgUrl;
+        seg.imgObj = img;
+        seg.type = "image";
+        this.commitChanges();
+        this.render();
+        if (this.selectedIndex === this.timeline.segments.findIndex(s => s.id === seg.id)) {
+          this.updateUIFromSelection();
+        }
+      };
+      img.src = imgUrl;
+    } catch (err) {
+      console.error("Failed to attach image to segment", err);
+    }
+  }
+
+  // Strip the image off a main-track segment, turning it into a text clip. Preserves
+  // start/length/prompt; guide_strength self-heals via commitChanges() (text excluded).
+  _convertSegmentToText(seg) {
+    if (!seg) return;
+    seg.type = "text";
+    delete seg.imageFile;
+    delete seg.imageB64;
+    delete seg.imgObj;
+    delete seg.isEndFrame;
+    this.commitChanges();
+    this.render();
+    if (this.selectedIndex === this.timeline.segments.findIndex(s => s.id === seg.id)) {
+      this.updateUIFromSelection();
+    }
+  }
+
+  // Open a one-shot image picker and attach the chosen file to `seg`.
+  _pickImageForSegment(seg) {
+    const fi = document.createElement("input");
+    fi.type = "file";
+    fi.accept = "image/*";
+    fi.addEventListener("change", (ev) => {
+      if (ev.target.files?.[0]) this._attachImageToSegment(ev.target.files[0], seg);
+    });
+    fi.click();
+  }
+
   showContextMenu(clientX, clientY, seg, trackType) {
     this.dismissContextMenu();
     const menu = document.createElement("div");
@@ -9691,6 +9755,29 @@ class TimelineEditor {
     }
 
     // ==========================================
+    // 4b. Define Convert Clip Type (image <-> text), preserving start/length/prompt
+    // ==========================================
+    let removeImgBtn = null;
+    let addImgBtn = null;
+    if (trackType === "image" && seg.type === "image") {
+      removeImgBtn = document.createElement("button");
+      removeImgBtn.className = "pr-gap-menu-btn";
+      removeImgBtn.innerHTML = `Remove Image (→ Text)`;
+      removeImgBtn.onclick = () => {
+        this._convertSegmentToText(seg);
+        this.dismissContextMenu();
+      };
+    } else if (trackType === "image" && seg.type === "text") {
+      addImgBtn = document.createElement("button");
+      addImgBtn.className = "pr-gap-menu-btn";
+      addImgBtn.innerHTML = `Add Image (→ Image)…`;
+      addImgBtn.onclick = () => {
+        this.dismissContextMenu();
+        this._pickImageForSegment(seg);
+      };
+    }
+
+    // ==========================================
     // 5. Define Unlink Media & Mark Selection options
     // ==========================================
     const isVidLink = trackType === "video" && seg.id.endsWith("_v");
@@ -9776,6 +9863,13 @@ class TimelineEditor {
     // Group 4: Convert to End Frame (Only if toggleEndFrameBtn is defined)
     if (toggleEndFrameBtn) {
       menu.appendChild(toggleEndFrameBtn);
+      menu.appendChild(makeDivider());
+    }
+
+    // Group 4b: Convert Clip Type (image <-> text)
+    if (removeImgBtn || addImgBtn) {
+      if (removeImgBtn) menu.appendChild(removeImgBtn);
+      if (addImgBtn) menu.appendChild(addImgBtn);
       menu.appendChild(makeDivider());
     }
 
