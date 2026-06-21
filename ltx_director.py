@@ -929,10 +929,6 @@ class LTXDirector(io.ComfyNode):
                     "inpaint_audio", default=True, optional=True,
                     tooltip="Toggle whether empty gaps in the audio track are inpainted with generated audio.",
                 ),
-                io.Float.Input(
-                    "audio_blend_secs", default=1.0, min=0.0, max=10.0, step=0.1, optional=True,
-                    tooltip="Crossfade length in seconds at each audio segment's trailing edge. Tapers the audio noise mask 0->1 so the model blends into freely-generated audio instead of cutting hard when a segment ends into a region with no audio. 0 = hard boundary (stock behavior).",
-                ),
                 io.String.Input(
                     "local_prompts", multiline=True, default="",
                     tooltip="Auto-populated from the timeline editor.",
@@ -983,6 +979,12 @@ class LTXDirector(io.ComfyNode):
                 io.Boolean.Input(
                     "override_audio", default=False, optional=True,
                     tooltip="Use the audio from the IC-LoRA video instead of using the audio track.",
+                ),
+                # Kept last so adding it does not shift the positional widget order of
+                # existing inputs (which would misread saved workflows' widget values).
+                io.Float.Input(
+                    "audio_blend_secs", default=1.0, min=0.0, max=10.0, step=0.1, optional=True,
+                    tooltip="Crossfade length in seconds at each audio segment's trailing edge. Tapers the audio noise mask 0->1 so the model blends into freely-generated audio instead of cutting hard when a segment ends into a region with no audio. 0 = hard boundary (stock behavior).",
                 ),
             ],
             outputs=[
