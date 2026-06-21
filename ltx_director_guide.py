@@ -322,7 +322,6 @@ class LTXDirectorGuide:
                 "tile_size": ("INT", {"default": 256, "min": 64, "max": 512, "step": 32}),
                 "tile_overlap": ("INT", {"default": 64, "min": 16, "max": 256, "step": 16}),
                 "retake_mode": ("BOOLEAN", {"default": False, "tooltip": "Force Retake Mode. If false, it will still auto-detect Retake Mode from the timeline data."}),
-                "video_guide_stride": ("INT", {"default": 1, "min": 1, "max": 64, "step": 1, "tooltip": "Default guide stride for video clips (extension and IC-LoRA motion): pin every Nth encoded latent frame as an anchor and let the model interpolate between them — fixes stair-stepping on short extensions. 1 = pin every frame (max fidelity). Override per-clip via the clip's right-click 'Set Guide Stride'."}),
             }
         }
 
@@ -331,7 +330,10 @@ class LTXDirectorGuide:
     FUNCTION = "execute"
 
     @classmethod
-    def execute(cls, positive, negative, vae, latent, guide_data, motion_guide_data=None, model=None, ic_lora_name="None", ic_lora_strength=1.0, scale_by=1.0, upscale_method="bicubic", image_attention_strength=1.0, crop="center", auto_snap_ic_grid=True, use_tiled_encode=False, tile_size=256, tile_overlap=64, retake_mode=False, video_guide_stride=1):
+    def execute(cls, positive, negative, vae, latent, guide_data, motion_guide_data=None, model=None, ic_lora_name="None", ic_lora_strength=1.0, scale_by=1.0, upscale_method="bicubic", image_attention_strength=1.0, crop="center", auto_snap_ic_grid=True, use_tiled_encode=False, tile_size=256, tile_overlap=64, retake_mode=False):
+        # Global default video-clip guide stride now comes from the timeline node (gear menu)
+        # via guide_data, so the control lives in the editor with the per-clip overrides.
+        video_guide_stride = int((guide_data or {}).get("default_stride", 1) or 1)
         motion_segments = (motion_guide_data or {}).get("segments", []) if motion_guide_data else []
         image_guides_count = len(guide_data.get("images", [])) if guide_data else 0
         print(f"[LTXDirectorGuide] execute started. motion_segments: {len(motion_segments)}, image_guides: {image_guides_count}, ic_lora_name: {ic_lora_name}, model connected: {model is not None}, retake_mode: {retake_mode}")

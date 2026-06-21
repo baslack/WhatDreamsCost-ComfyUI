@@ -10160,7 +10160,7 @@ class TimelineEditor {
   // --- Settings Menu ---
   // Widgets that are managed by the settings menu (hidden from node by default).
   get _settingsWidgetNames() {
-    return ["display_mode", "epsilon", "divisible_by", "img_compression"];
+    return ["display_mode", "epsilon", "divisible_by", "img_compression", "video_guide_stride"];
   }
 
   // Hide all settings widgets on the node (called on init).
@@ -10814,6 +10814,14 @@ class TimelineEditor {
     const compWidget = this.node.widgets?.find(w => w.name === "img_compression");
     if (compWidget) {
       menu.appendChild(this._makeSettingRow("Img Compression", createScrubbableNumberControl(compWidget, 1, 0, 100, false)));
+    }
+
+    // --- Video Guide Stride (global default; per-clip override via the clip's right-click menu) ---
+    const strideWidget = this.node.widgets?.find(w => w.name === "video_guide_stride");
+    if (strideWidget) {
+      const strideRow = this._makeSettingRow("Video Guide Stride", createScrubbableNumberControl(strideWidget, 1, 1, 64, false));
+      strideRow.title = "Default for video clips: pin every Nth latent frame so the model interpolates between anchors (fixes stair-stepping on short extensions). 1 = pin every frame. Override per-clip via a video clip's 'Set Guide Stride'.";
+      menu.appendChild(strideRow);
     }
 
     // --- Divider ---

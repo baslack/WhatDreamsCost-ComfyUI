@@ -980,6 +980,12 @@ class LTXDirector(io.ComfyNode):
                     "override_audio", default=False, optional=True,
                     tooltip="Use the audio from the IC-LoRA video instead of using the audio track.",
                 ),
+                # Kept last so adding it does not shift the positional widget order of
+                # existing inputs (which would misread saved workflows' widget values).
+                io.Int.Input(
+                    "video_guide_stride", default=1, min=1, max=64, step=1, optional=True,
+                    tooltip="Default guide stride for video clips: pin every Nth encoded latent frame as an anchor and let the model interpolate between them — fixes stair-stepping on short extensions. 1 = pin every frame. Override per-clip via the clip's right-click 'Set Guide Stride'. (Surfaced in the timeline gear menu.)",
+                ),
             ],
             outputs=[
                 io.Model.Output(display_name="model"),
@@ -999,7 +1005,8 @@ class LTXDirector(io.ComfyNode):
                 frame_rate=24, display_mode="seconds",
                 custom_width=768, custom_height=512, resize_method="maintain aspect ratio",
                 divisible_by=32, img_compression=0, audio_vae=None, optional_latent=None,
-                use_custom_audio=False, inpaint_audio=True, use_custom_motion=True, override_audio=False) -> io.NodeOutput:
+                use_custom_audio=False, inpaint_audio=True, use_custom_motion=True, override_audio=False,
+                video_guide_stride=1) -> io.NodeOutput:
 
         # Parse timeline data
         try:
@@ -1021,7 +1028,8 @@ class LTXDirector(io.ComfyNode):
         log.info(f"[LTXDirector] execute RECEIVED global_prompt: {repr(global_prompt)}")
 
         # --- Build guide_data from image segments FIRST (to derive output dimensions) ---
-        guide_data = {"images": [], "insert_frames": [], "strengths": [], "strides": [], "frame_rate": frame_rate}
+        guide_data = {"images": [], "insert_frames": [], "strengths": [], "strides": [],
+                      "default_stride": int(video_guide_stride or 1), "frame_rate": frame_rate}
         derived_w, derived_h = custom_width, custom_height
         try:
             img_segs = [
