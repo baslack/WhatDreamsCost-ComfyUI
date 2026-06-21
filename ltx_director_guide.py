@@ -507,6 +507,7 @@ class LTXDirectorGuide:
             print(f"[LTXDirectorGuide] Using Appended Keyframe Guidance. is_lora_active: {is_lora_active}")
 
             # A. Process Image Guides
+            guide_strides = guide_data.get("strides", []) if guide_data else []
             for idx, img_tensor in enumerate(images):
                 f_idx = insert_frames[idx] if idx < len(insert_frames) else 0
                 strength = float(strengths[idx] if idx < len(strengths) else 1.0)
@@ -534,9 +535,41 @@ class LTXDirectorGuide:
                 tokens_added = guide_latent.shape[2] * guide_latent.shape[3] * guide_latent.shape[4]
                 guide_orig_shape = list(guide_latent.shape[2:])
 
-                positive, negative, latent_image, noise_mask = nodes_lt.LTXVAddGuide.append_keyframe(
-                    positive, negative, frame_idx, latent_image, noise_mask, guide_latent, strength, scale_factors
-                )
+                # Video-extension guide density: a multi-frame guide (a video segment) pins
+                # every encoded latent frame at full strength, which stair-steps on short
+                # extensions. Thin the per-frame guide mask so only every Nth latent frame
+                # stays an anchor and the model interpolates the gaps. Effective stride =
+                # per-clip override (seg.videoGuideStride) when set, else the node-level
+                # video_guide_stride default. stride<=1 keeps every frame pinned (unchanged).
+                # Segment endpoints (first/last latent frame) stay anchored so the extension
+                # joins cleanly at both ends.
+                guide_mask = None
+                F_g = guide_latent.shape[2]
+                if F_g > 1:
+                    per_clip = 0
+                    if idx < len(guide_strides):
+                        try:
+                            per_clip = int(guide_strides[idx])
+                        except (TypeError, ValueError):
+                            per_clip = 0
+                    eff_stride = per_clip if per_clip >= 1 else int(video_guide_stride)
+                    if eff_stride > 1:
+                        B_g, C_g, _, H_g, W_g = guide_latent.shape
+                        guide_mask = torch.ones((B_g, 1, F_g, H_g, W_g), device=guide_latent.device, dtype=guide_latent.dtype)
+                        for f in range(F_g):
+                            if f == 0 or f == F_g - 1:
+                                continue  # keep segment endpoints anchored
+                            if f % eff_stride != 0:
+                                guide_mask[:, :, f, :, :] = 0.0
+
+                if guide_mask is not None:
+                    positive, negative, latent_image, noise_mask = nodes_lt.LTXVAddGuide.append_keyframe(
+                        positive, negative, frame_idx, latent_image, noise_mask, guide_latent, strength, scale_factors, guide_mask=guide_mask
+                    )
+                else:
+                    positive, negative, latent_image, noise_mask = nodes_lt.LTXVAddGuide.append_keyframe(
+                        positive, negative, frame_idx, latent_image, noise_mask, guide_latent, strength, scale_factors
+                    )
                 if is_lora_active:
                     positive = _append_guide_attention_entry(positive, tokens_added, guide_orig_shape, attention_strength=image_attention_strength)
                     negative = _append_guide_attention_entry(negative, tokens_added, guide_orig_shape, attention_strength=image_attention_strength)

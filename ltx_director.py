@@ -1021,7 +1021,7 @@ class LTXDirector(io.ComfyNode):
         log.info(f"[LTXDirector] execute RECEIVED global_prompt: {repr(global_prompt)}")
 
         # --- Build guide_data from image segments FIRST (to derive output dimensions) ---
-        guide_data = {"images": [], "insert_frames": [], "strengths": [], "frame_rate": frame_rate}
+        guide_data = {"images": [], "insert_frames": [], "strengths": [], "strides": [], "frame_rate": frame_rate}
         derived_w, derived_h = custom_width, custom_height
         try:
             img_segs = [
@@ -1090,6 +1090,9 @@ class LTXDirector(io.ComfyNode):
                 guide_data["images"].append(tensor)
                 guide_data["insert_frames"].append(insert_frame)
                 guide_data["strengths"].append(float(strength))
+                # Per-clip video guide stride (0 = inherit the node-level default). Only
+                # meaningful for multi-frame video guides; image guides are single-frame.
+                guide_data["strides"].append(int(seg.get("videoGuideStride", 0) or 0) if seg.get("type") == "video" else 0)
             
             # If no images were loaded from the timeline, create a dummy image at strength 0
             # to prevent artifacts in text-to-video mode.
