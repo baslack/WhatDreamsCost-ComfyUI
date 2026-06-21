@@ -322,6 +322,7 @@ class LTXDirectorGuide:
                 "tile_size": ("INT", {"default": 256, "min": 64, "max": 512, "step": 32}),
                 "tile_overlap": ("INT", {"default": 64, "min": 16, "max": 256, "step": 16}),
                 "retake_mode": ("BOOLEAN", {"default": False, "tooltip": "Force Retake Mode. If false, it will still auto-detect Retake Mode from the timeline data."}),
+                "video_guide_stride": ("INT", {"default": 1, "min": 1, "max": 64, "step": 1, "tooltip": "Motion video guide density: pin every Nth latent frame of a video segment as an anchor. 1 anchors every latent frame (maximum fidelity); increase to let the model interpolate more freely between anchors — pair with a lower segment video strength to soften hard stops without losing on-model coherence."}),
             }
         }
 
@@ -330,7 +331,7 @@ class LTXDirectorGuide:
     FUNCTION = "execute"
 
     @classmethod
-    def execute(cls, positive, negative, vae, latent, guide_data, motion_guide_data=None, model=None, ic_lora_name="None", ic_lora_strength=1.0, scale_by=1.0, upscale_method="bicubic", image_attention_strength=1.0, crop="center", auto_snap_ic_grid=True, use_tiled_encode=False, tile_size=256, tile_overlap=64, retake_mode=False):
+    def execute(cls, positive, negative, vae, latent, guide_data, motion_guide_data=None, model=None, ic_lora_name="None", ic_lora_strength=1.0, scale_by=1.0, upscale_method="bicubic", image_attention_strength=1.0, crop="center", auto_snap_ic_grid=True, use_tiled_encode=False, tile_size=256, tile_overlap=64, retake_mode=False, video_guide_stride=1):
         motion_segments = (motion_guide_data or {}).get("segments", []) if motion_guide_data else []
         image_guides_count = len(guide_data.get("images", [])) if guide_data else 0
         print(f"[LTXDirectorGuide] execute started. motion_segments: {len(motion_segments)}, image_guides: {image_guides_count}, ic_lora_name: {ic_lora_name}, model connected: {model is not None}, retake_mode: {retake_mode}")
@@ -597,6 +598,21 @@ class LTXDirectorGuide:
                             if i < F_g:
                                 guide_mask_val = 1.0 + video_strength * (1.0 - s)
                                 guide_mask[:, :, i, :, :] = guide_mask_val
+
+                    # Guide density (video_guide_stride): pin only every Nth latent frame
+                    # as an anchor by zeroing the guide-strength mask on the in-between
+                    # frames, so the model interpolates between anchors instead of being
+                    # pinned to every frame. stride=1 keeps every frame guided (default).
+                    # The first anchor (frame 0) and the boundary-ramp frames are always
+                    # kept so segment starts and cross-segment blends are preserved.
+                    stride = max(1, int(video_guide_stride))
+                    if stride > 1:
+                        ramp_keep = 2 if start_frame > 0 else 0
+                        for f in range(F_g):
+                            if f == 0 or f < ramp_keep:
+                                continue
+                            if f % stride != 0:
+                                guide_mask[:, :, f, :, :] = 0.0
 
                     ldf = int(max(1, round(float(latent_downscale_factor))))
                     if ldf > 1:
