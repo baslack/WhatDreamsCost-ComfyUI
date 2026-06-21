@@ -322,7 +322,7 @@ class LTXDirectorGuide:
                 "tile_size": ("INT", {"default": 256, "min": 64, "max": 512, "step": 32}),
                 "tile_overlap": ("INT", {"default": 64, "min": 16, "max": 256, "step": 16}),
                 "retake_mode": ("BOOLEAN", {"default": False, "tooltip": "Force Retake Mode. If false, it will still auto-detect Retake Mode from the timeline data."}),
-                "video_guide_stride": ("INT", {"default": 1, "min": 1, "max": 64, "step": 1, "tooltip": "Motion video guide density: pin every Nth latent frame of a video segment as an anchor. 1 anchors every latent frame (maximum fidelity); increase to let the model interpolate more freely between anchors — pair with a lower segment video strength to soften hard stops without losing on-model coherence."}),
+                "video_guide_stride": ("INT", {"default": 1, "min": 1, "max": 64, "step": 1, "tooltip": "Default guide stride for video clips (extension and IC-LoRA motion): pin every Nth encoded latent frame as an anchor and let the model interpolate between them — fixes stair-stepping on short extensions. 1 = pin every frame (max fidelity). Override per-clip via the clip's right-click 'Set Guide Stride'."}),
             }
         }
 
