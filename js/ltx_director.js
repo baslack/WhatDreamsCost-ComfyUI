@@ -9457,6 +9457,29 @@ class TimelineEditor {
     fi.click();
   }
 
+  // Per-clip video guide stride: pin every Nth encoded latent frame of this video clip
+  // (the rest interpolate), overriding the node-level default. Blank/0 inherits the
+  // default; 1 pins every frame. Stored on seg.videoGuideStride and read by the backend.
+  _setVideoStrideOnSegment(seg) {
+    if (!seg) return;
+    const cur = seg.videoGuideStride ? String(seg.videoGuideStride) : "";
+    const input = window.prompt(
+      "Guide stride for this video clip — pin every Nth latent frame (1-64), letting the model interpolate between anchors.\n\nBlank = inherit the node default. 1 = pin every frame.",
+      cur
+    );
+    if (input === null) return; // cancelled
+    const trimmed = input.trim();
+    if (trimmed === "" || trimmed === "0") {
+      delete seg.videoGuideStride; // inherit node-level default
+    } else {
+      let n = parseInt(trimmed, 10);
+      if (isNaN(n) || n < 1) n = 1;
+      if (n > 64) n = 64;
+      seg.videoGuideStride = n;
+    }
+    this.commitChanges();
+  }
+
   showContextMenu(clientX, clientY, seg, trackType) {
     this.dismissContextMenu();
     const menu = document.createElement("div");
@@ -9798,6 +9821,7 @@ class TimelineEditor {
     let removeVideoBtn = null;
     let replaceVideoImgBtn = null;
     let replaceVideoFileBtn = null;
+    let setStrideBtn = null;
     if (trackType === "image" && seg.type === "image") {
       removeImgBtn = document.createElement("button");
       removeImgBtn.className = "pr-gap-menu-btn";
@@ -9837,6 +9861,15 @@ class TimelineEditor {
       replaceVideoFileBtn.onclick = () => {
         this.dismissContextMenu();
         this._replaceVideoOnSegment(seg);
+      };
+
+      setStrideBtn = document.createElement("button");
+      setStrideBtn.className = "pr-gap-menu-btn";
+      setStrideBtn.innerHTML = seg.videoGuideStride ? `Set Guide Stride… (${seg.videoGuideStride})` : `Set Guide Stride…`;
+      setStrideBtn.title = "Pin every Nth latent frame of this clip so the model interpolates between anchors (fixes stair-stepping on short extensions).";
+      setStrideBtn.onclick = () => {
+        this.dismissContextMenu();
+        this._setVideoStrideOnSegment(seg);
       };
     }
 
@@ -9936,6 +9969,7 @@ class TimelineEditor {
       if (removeVideoBtn) menu.appendChild(removeVideoBtn);
       if (replaceVideoImgBtn) menu.appendChild(replaceVideoImgBtn);
       if (replaceVideoFileBtn) menu.appendChild(replaceVideoFileBtn);
+      if (setStrideBtn) menu.appendChild(setStrideBtn);
       menu.appendChild(makeDivider());
     }
 
