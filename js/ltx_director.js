@@ -4076,7 +4076,7 @@ class TimelineEditor {
     }
   }
 
-  async handleVideoUpload(files, targetFrameStart = null) {
+  async handleVideoUpload(files, targetFrameStart = null, initialPrompt = "") {
     const frameRate = this.getFrameRate();
 
     if (this.retakeMode) {
@@ -4241,7 +4241,7 @@ class TimelineEditor {
               videoDurationFrames: clipFrames,
               imageFile: "",  // filled in once background upload completes
               fileName: file.name,
-              prompt: "",
+              prompt: initialPrompt || "",
               videoEl: vid,
               _uploading: true,
               _blobUrl: blobUrl,
@@ -9434,9 +9434,11 @@ class TimelineEditor {
     }
   }
 
-  // Replace a video clip's source with a different video file. Reuses the standard import
-  // pipeline (upload + thumbnail + duration + linked audio) by removing this clip and its
-  // linked audio sibling, then re-importing the chosen file at the same start position.
+  // Convert a clip into a video clip by importing a video file. Reuses the standard import
+  // pipeline (upload + thumbnail + duration + linked audio) by removing the existing clip
+  // (and its linked _a audio sibling, if any) and re-importing the chosen file at the same
+  // start, carrying the clip's prompt over. Used by both "Replace Video with..." (on a
+  // video clip) and "Add Video (-> Video)..." (on a text/image clip).
   _replaceVideoOnSegment(seg) {
     const fi = document.createElement("input");
     fi.type = "file";
@@ -9445,6 +9447,7 @@ class TimelineEditor {
       const file = ev.target.files?.[0];
       if (!file || !seg) return;
       const start = seg.start;
+      const prompt = seg.prompt || "";
       const baseId = (typeof seg.id === "string" && seg.id.endsWith("_v")) ? seg.id.slice(0, -2) : null;
       this.timeline.segments = this.timeline.segments.filter(s => s.id !== seg.id);
       if (baseId) {
@@ -9452,7 +9455,7 @@ class TimelineEditor {
       }
       this.selectedIndex = -1;
       this.selectionType = "image";
-      this.handleVideoUpload([file], start);
+      this.handleVideoUpload([file], start, prompt);
     });
     fi.click();
   }
@@ -9822,6 +9825,7 @@ class TimelineEditor {
     let replaceVideoImgBtn = null;
     let replaceVideoFileBtn = null;
     let setStrideBtn = null;
+    let addVideoBtn = null;
     if (trackType === "image" && seg.type === "image") {
       removeImgBtn = document.createElement("button");
       removeImgBtn.className = "pr-gap-menu-btn";
@@ -9830,6 +9834,14 @@ class TimelineEditor {
         this._convertSegmentToText(seg);
         this.dismissContextMenu();
       };
+
+      addVideoBtn = document.createElement("button");
+      addVideoBtn.className = "pr-gap-menu-btn";
+      addVideoBtn.innerHTML = `Add Video (→ Video)…`;
+      addVideoBtn.onclick = () => {
+        this.dismissContextMenu();
+        this._replaceVideoOnSegment(seg);
+      };
     } else if (trackType === "image" && seg.type === "text") {
       addImgBtn = document.createElement("button");
       addImgBtn.className = "pr-gap-menu-btn";
@@ -9837,6 +9849,14 @@ class TimelineEditor {
       addImgBtn.onclick = () => {
         this.dismissContextMenu();
         this._pickImageForSegment(seg);
+      };
+
+      addVideoBtn = document.createElement("button");
+      addVideoBtn.className = "pr-gap-menu-btn";
+      addVideoBtn.innerHTML = `Add Video (→ Video)…`;
+      addVideoBtn.onclick = () => {
+        this.dismissContextMenu();
+        this._replaceVideoOnSegment(seg);
       };
     } else if (trackType === "image" && seg.type === "video") {
       removeVideoBtn = document.createElement("button");
@@ -9963,9 +9983,10 @@ class TimelineEditor {
     }
 
     // Group 4b: Convert Clip Type (image <-> text <-> video)
-    if (removeImgBtn || addImgBtn || removeVideoBtn || replaceVideoImgBtn || replaceVideoFileBtn) {
+    if (removeImgBtn || addImgBtn || addVideoBtn || removeVideoBtn || replaceVideoImgBtn || replaceVideoFileBtn) {
       if (removeImgBtn) menu.appendChild(removeImgBtn);
       if (addImgBtn) menu.appendChild(addImgBtn);
+      if (addVideoBtn) menu.appendChild(addVideoBtn);
       if (removeVideoBtn) menu.appendChild(removeVideoBtn);
       if (replaceVideoImgBtn) menu.appendChild(replaceVideoImgBtn);
       if (replaceVideoFileBtn) menu.appendChild(replaceVideoFileBtn);
