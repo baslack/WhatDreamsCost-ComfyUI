@@ -9378,6 +9378,7 @@ class TimelineEditor {
 
       const img = new Image();
       img.onload = () => {
+        this._clearVideoFields(seg);
         seg.imageFile = imageFile;
         seg.imageB64 = imgUrl;
         seg.imgObj = img;
@@ -9403,6 +9404,7 @@ class TimelineEditor {
     delete seg.imageB64;
     delete seg.imgObj;
     delete seg.isEndFrame;
+    this._clearVideoFields(seg);
     this.commitChanges();
     this.render();
     if (this.selectedIndex === this.timeline.segments.findIndex(s => s.id === seg.id)) {
@@ -9417,6 +9419,40 @@ class TimelineEditor {
     fi.accept = "image/*";
     fi.addEventListener("change", (ev) => {
       if (ev.target.files?.[0]) this._attachImageToSegment(ev.target.files[0], seg);
+    });
+    fi.click();
+  }
+
+  // Strip video-specific fields so a video clip can be cleanly converted to another type.
+  // Image/text fields are handled by the caller; this only removes the video extras.
+  _clearVideoFields(seg) {
+    if (!seg) return;
+    for (const k of ["videoFile", "videoEl", "frames", "videoDurationFrames", "trimStart",
+                     "_blobUrl", "_uploading", "_isSeeking", "thumbnails", "_extractingThumbs",
+                     "fileName", "fileSize"]) {
+      delete seg[k];
+    }
+  }
+
+  // Replace a video clip's source with a different video file. Reuses the standard import
+  // pipeline (upload + thumbnail + duration + linked audio) by removing this clip and its
+  // linked audio sibling, then re-importing the chosen file at the same start position.
+  _replaceVideoOnSegment(seg) {
+    const fi = document.createElement("input");
+    fi.type = "file";
+    fi.accept = "video/*";
+    fi.addEventListener("change", (ev) => {
+      const file = ev.target.files?.[0];
+      if (!file || !seg) return;
+      const start = seg.start;
+      const baseId = (typeof seg.id === "string" && seg.id.endsWith("_v")) ? seg.id.slice(0, -2) : null;
+      this.timeline.segments = this.timeline.segments.filter(s => s.id !== seg.id);
+      if (baseId) {
+        this.timeline.audioSegments = this.timeline.audioSegments.filter(s => s.id !== baseId + "_a");
+      }
+      this.selectedIndex = -1;
+      this.selectionType = "image";
+      this.handleVideoUpload([file], start);
     });
     fi.click();
   }
@@ -9759,6 +9795,9 @@ class TimelineEditor {
     // ==========================================
     let removeImgBtn = null;
     let addImgBtn = null;
+    let removeVideoBtn = null;
+    let replaceVideoImgBtn = null;
+    let replaceVideoFileBtn = null;
     if (trackType === "image" && seg.type === "image") {
       removeImgBtn = document.createElement("button");
       removeImgBtn.className = "pr-gap-menu-btn";
@@ -9774,6 +9813,30 @@ class TimelineEditor {
       addImgBtn.onclick = () => {
         this.dismissContextMenu();
         this._pickImageForSegment(seg);
+      };
+    } else if (trackType === "image" && seg.type === "video") {
+      removeVideoBtn = document.createElement("button");
+      removeVideoBtn.className = "pr-gap-menu-btn";
+      removeVideoBtn.innerHTML = `Remove Video (→ Text)`;
+      removeVideoBtn.onclick = () => {
+        this._convertSegmentToText(seg);
+        this.dismissContextMenu();
+      };
+
+      replaceVideoImgBtn = document.createElement("button");
+      replaceVideoImgBtn.className = "pr-gap-menu-btn";
+      replaceVideoImgBtn.innerHTML = `Replace with Image (→ Image)…`;
+      replaceVideoImgBtn.onclick = () => {
+        this.dismissContextMenu();
+        this._pickImageForSegment(seg);
+      };
+
+      replaceVideoFileBtn = document.createElement("button");
+      replaceVideoFileBtn.className = "pr-gap-menu-btn";
+      replaceVideoFileBtn.innerHTML = `Replace Video with…`;
+      replaceVideoFileBtn.onclick = () => {
+        this.dismissContextMenu();
+        this._replaceVideoOnSegment(seg);
       };
     }
 
@@ -9866,10 +9929,13 @@ class TimelineEditor {
       menu.appendChild(makeDivider());
     }
 
-    // Group 4b: Convert Clip Type (image <-> text)
-    if (removeImgBtn || addImgBtn) {
+    // Group 4b: Convert Clip Type (image <-> text <-> video)
+    if (removeImgBtn || addImgBtn || removeVideoBtn || replaceVideoImgBtn || replaceVideoFileBtn) {
       if (removeImgBtn) menu.appendChild(removeImgBtn);
       if (addImgBtn) menu.appendChild(addImgBtn);
+      if (removeVideoBtn) menu.appendChild(removeVideoBtn);
+      if (replaceVideoImgBtn) menu.appendChild(replaceVideoImgBtn);
+      if (replaceVideoFileBtn) menu.appendChild(replaceVideoFileBtn);
       menu.appendChild(makeDivider());
     }
 
