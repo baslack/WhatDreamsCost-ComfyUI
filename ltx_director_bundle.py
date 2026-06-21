@@ -111,6 +111,42 @@ def _collect_media_refs(timeline):
     return out
 
 
+# Marker written by the pre-2.0 bundle/serializer (js _buildSerializationPayload).
+_LEGACY_FORMAT = "ltx-director-timeline"
+
+
+def _migrate_legacy_manifest(manifest):
+    """Normalise a pre-2.0 bundle manifest in place to the LTX Director 2.0 payload shape.
+
+    Old bundles (``format: "ltx-director-timeline"``) differ from a 2.0 save payload in
+    two ways that matter for restore:
+      * the global prompt was stored inside ``settings`` rather than at the top level, and
+      * an old main-track *video* segment kept its playable file in ``videoFile`` with no
+        ``imageFile`` (2.0 reads a video segment's source from ``imageFile``).
+
+    Bridging both here lets the existing 2.0 loader (``_applyLoadedTimeline``) restore an
+    old bundle unchanged. Newer manifests are returned untouched.
+    """
+    if not isinstance(manifest, dict) or manifest.get("format") != _LEGACY_FORMAT:
+        return manifest
+
+    settings = manifest.get("settings") or {}
+    # Lift the global prompt to the top level so 2.0 restores it via syncGlobalPrompt().
+    if manifest.get("global_prompt") is None and "global_prompt" in settings:
+        manifest["global_prompt"] = settings.get("global_prompt") or ""
+
+    timeline = manifest.get("timeline") or {}
+    for seg in (timeline.get("segments") or []):
+        if seg.get("type") == "video" and seg.get("videoFile") and not seg.get("imageFile"):
+            # 2.0 plays a main-track video from imageFile; mirror videoFile into it.
+            seg["imageFile"] = seg["videoFile"]
+            # Old pre-extracted guide frames + stale thumbnail URL are unused by 2.0;
+            # drop them so the editor rebuilds the preview from the staged video.
+            seg.pop("frames", None)
+            seg.pop("imageB64", None)
+    return manifest
+
+
 @PromptServer.instance.routes.post("/ltx_director/save_bundle")
 async def save_bundle(request):
     try:
@@ -171,6 +207,10 @@ async def load_bundle(request):
         manifest = json.loads(zf.read("timeline.json").decode("utf-8"))
     except Exception:
         return web.Response(status=400, text="Bundle missing timeline.json")
+
+    # Bring a pre-2.0 bundle up to the 2.0 payload shape before media is re-pointed,
+    # so legacy video segments (videoFile -> imageFile) get staged/re-pointed correctly.
+    manifest = _migrate_legacy_manifest(manifest)
 
     os.makedirs(real_dest_root, exist_ok=True)
 

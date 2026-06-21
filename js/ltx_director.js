@@ -10560,6 +10560,26 @@ class TimelineEditor {
     }
   }
 
+  // After a bundle's media is staged under input/<bundleName>/, an image segment's stored
+  // imageB64 (often a /view URL pointing at the pre-bundle subfolder) no longer resolves,
+  // and 2.0 builds image previews from imageB64 (it does not rebuild them from imageFile on
+  // load). Rebuild the /view thumbnail from the re-pointed imageFile so old and new bundles
+  // both restore their previews. Video segments are skipped — 2.0 regenerates their
+  // thumbnails from the video file — and self-contained data: thumbnails are left as-is.
+  _rehydrateBundleThumbnails(manifest) {
+    const tl = manifest && manifest.timeline;
+    if (!tl || !Array.isArray(tl.segments)) return;
+    for (const seg of tl.segments) {
+      if (!seg || !seg.imageFile) continue;
+      if (seg.type === "video" || seg.type === "motion_video") continue;
+      if (typeof seg.imageB64 === "string" && seg.imageB64.startsWith("data:")) continue;
+      const parts = seg.imageFile.split(/[/\\]/);
+      const justName = parts.pop() || "";
+      const subfolder = parts.join("/");
+      seg.imageB64 = api.apiURL(`/view?filename=${encodeURIComponent(justName)}&type=input&subfolder=${encodeURIComponent(subfolder)}`);
+    }
+  }
+
   async handleImportBundle() {
     const input = document.createElement("input");
     input.type = "file";
@@ -10577,8 +10597,12 @@ class TimelineEditor {
           return;
         }
         const data = await resp.json();
+        const manifest = data.payload || {};
+        // Media now lives under input/<bundleName>/, so any stored /view thumbnail URL is
+        // stale. Rebuild image thumbnails from the re-pointed imageFile before applying.
+        this._rehydrateBundleThumbnails(manifest);
         // The manifest is the same shape as a saved timeline file, so reuse the loader.
-        this._applyLoadedTimeline(JSON.stringify(data.payload), null);
+        this._applyLoadedTimeline(JSON.stringify(manifest), null);
         this.dismissSettingsMenu();
       } catch (err) {
         console.error("Import bundle error:", err);
