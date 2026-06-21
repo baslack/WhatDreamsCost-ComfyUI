@@ -9826,7 +9826,7 @@ class TimelineEditor {
     let replaceVideoFileBtn = null;
     let setStrideBtn = null;
     let addVideoBtn = null;
-    if (trackType === "image" && seg.type === "image") {
+    if (trackType === "image") {
       removeImgBtn = document.createElement("button");
       removeImgBtn.className = "pr-gap-menu-btn";
       removeImgBtn.innerHTML = `Remove Image (→ Text)`;
@@ -9842,7 +9842,7 @@ class TimelineEditor {
         this.dismissContextMenu();
         this._replaceVideoOnSegment(seg);
       };
-    } else if (trackType === "image" && seg.type === "text") {
+    } else if (trackType === "text") {
       addImgBtn = document.createElement("button");
       addImgBtn.className = "pr-gap-menu-btn";
       addImgBtn.innerHTML = `Add Image (→ Image)…`;
@@ -9858,7 +9858,7 @@ class TimelineEditor {
         this.dismissContextMenu();
         this._replaceVideoOnSegment(seg);
       };
-    } else if (trackType === "image" && seg.type === "video") {
+    } else if (trackType === "video") {
       removeVideoBtn = document.createElement("button");
       removeVideoBtn.className = "pr-gap-menu-btn";
       removeVideoBtn.innerHTML = `Remove Video (→ Text)`;
