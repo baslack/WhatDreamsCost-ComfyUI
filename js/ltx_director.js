@@ -10465,35 +10465,78 @@ class TimelineEditor {
   }
 
   // --- Save / Load Handlers ---
+  // Load a server-saved timeline: fetch the list, let the user pick one, then apply it.
   async handleLoadTimeline() {
+    let names = [];
     try {
-      if (window.showOpenFilePicker) {
-        const [fileHandle] = await window.showOpenFilePicker({
-          types: [{ description: 'Timeline JSON', accept: { 'application/json': ['.json'] } }],
-          multiple: false
-        });
-        const file = await fileHandle.getFile();
-        const content = await file.text();
-        this._applyLoadedTimeline(content, fileHandle);
-      } else {
-        // Fallback for browsers without showOpenFilePicker (e.g. Firefox)
-        const input = document.createElement("input");
-        input.type = "file";
-        input.accept = ".json";
-        input.onchange = e => {
-          const file = e.target.files[0];
-          if (!file) return;
-          const reader = new FileReader();
-          reader.onload = evt => this._applyLoadedTimeline(evt.target.result, null);
-          reader.readAsText(file);
-        };
-        input.click();
+      const resp = await api.fetchApi("/ltx_director/list_timelines");
+      if (resp.status === 200) {
+        const data = await resp.json();
+        names = Array.isArray(data.names) ? data.names : [];
       }
     } catch (e) {
-      if (e.name !== "AbortError") {
-        console.error("Failed to load timeline:", e);
+      console.error("List timelines error:", e);
+    }
+    if (!names.length) {
+      alert("No saved timelines found. Use Save Timeline first.");
+      return;
+    }
+    this._showTimelinePicker(names);
+  }
+
+  _showTimelinePicker(names) {
+    const overlay = document.createElement("div");
+    overlay.style.cssText = "position:fixed;inset:0;background:rgba(0,0,0,0.6);z-index:10001;display:flex;align-items:center;justify-content:center;";
+
+    const box = document.createElement("div");
+    box.className = "pr-settings-menu";
+    box.style.cssText = "min-width:280px;max-width:420px;max-height:70vh;overflow:auto;padding:16px;box-sizing:border-box;";
+
+    const title = document.createElement("div");
+    title.className = "pr-settings-title";
+    title.textContent = "Load Timeline";
+    box.appendChild(title);
+
+    const close = () => { if (overlay.parentNode) overlay.parentNode.removeChild(overlay); };
+
+    const list = document.createElement("div");
+    list.style.cssText = "display:flex;flex-direction:column;gap:6px;margin:10px 0;";
+    for (const name of names) {
+      const b = document.createElement("button");
+      b.className = "pr-settings-toggle-btn";
+      b.textContent = name;
+      b.onclick = () => { close(); this._loadTimelineByName(name); };
+      list.appendChild(b);
+    }
+    box.appendChild(list);
+
+    const cancel = document.createElement("button");
+    cancel.className = "pr-settings-toggle-btn";
+    cancel.textContent = "Cancel";
+    cancel.style.width = "auto";
+    cancel.onclick = close;
+    box.appendChild(cancel);
+
+    overlay.appendChild(box);
+    overlay.addEventListener("mousedown", (e) => { if (e.target === overlay) close(); });
+    document.body.appendChild(overlay);
+  }
+
+  async _loadTimelineByName(name) {
+    try {
+      const resp = await api.fetchApi(`/ltx_director/load_timeline?name=${encodeURIComponent(name)}`);
+      if (resp.status !== 200) {
+        console.error("Load timeline failed:", resp.status);
         alert("Failed to load timeline. See console for details.");
+        return;
       }
+      const text = await resp.text();
+      this._applyLoadedTimeline(text, null);
+      this.node._ltxTimelineName = name;  // remember so subsequent Saves overwrite it
+      this.dismissSettingsMenu();
+    } catch (e) {
+      console.error("Load timeline error:", e);
+      alert("Failed to load timeline. See console for details.");
     }
   }
 
@@ -10681,58 +10724,51 @@ class TimelineEditor {
     }, null, 2);
   }
 
-  async handleSaveTimeline() {
-    if (!this.currentFileHandle) {
-      return this.handleSaveTimelineAs();
-    }
-
+  // POST the timeline JSON to the ComfyUI backend under `name`. Server-side so it works in
+  // browsers (e.g. Brave) that disable the File System Access API. Returns true on success.
+  async _saveTimelineToServer(name) {
     try {
-      const payload = this._getTimelineSavePayload();
-      const writable = await this.currentFileHandle.createWritable();
-      await writable.write(payload);
-      await writable.close();
+      const resp = await api.fetchApi("/ltx_director/save_timeline", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ name, payload: this._getTimelineSavePayload() }),
+      });
+      if (resp.status !== 200) {
+        console.error("Save timeline failed:", resp.status);
+        alert("Failed to save timeline. See console for details.");
+        return false;
+      }
+      const data = await resp.json();
+      this.node._ltxTimelineName = data.name;  // remember for silent overwrites
       this.dismissSettingsMenu();
       return true;
     } catch (e) {
-      console.error("Failed to save timeline:", e);
-      alert("Failed to save. You may need to use Save As (Shift-click Save).");
+      console.error("Save timeline error:", e);
+      alert("Failed to save timeline. See console for details.");
       return false;
     }
   }
 
-  async handleSaveTimelineAs() {
-    const payload = this._getTimelineSavePayload();
-
-    try {
-      if (window.showSaveFilePicker) {
-        const fileHandle = await window.showSaveFilePicker({
-          suggestedName: "timeline_export.json",
-          types: [{ description: 'Timeline JSON', accept: { 'application/json': ['.json'] } }]
-        });
-        const writable = await fileHandle.createWritable();
-        await writable.write(payload);
-        await writable.close();
-        this.currentFileHandle = fileHandle;
-      } else {
-        // Fallback for Firefox
-        const blob = new Blob([payload], { type: "application/json" });
-        const url = URL.createObjectURL(blob);
-        const a = document.createElement("a");
-        a.href = url;
-        a.download = "timeline_export.json";
-        a.click();
-        URL.revokeObjectURL(url);
-        // Can't track file handle via download fallback
-        this.currentFileHandle = null;
-      }
-      this.dismissSettingsMenu();
-      return true;
-    } catch (e) {
-      if (e.name !== "AbortError") {
-        console.error("Failed to save timeline as:", e);
-      }
-      return false;  // cancelled or failed — caller (Clear dialog) should not clear
+  // Regular Save: overwrite the remembered timeline silently. Only the first save (no name
+  // yet) prompts for a name. Returns true on success. Shift-click routes to Save As.
+  async handleSaveTimeline() {
+    let name = this.node._ltxTimelineName;
+    if (!name) {
+      name = window.prompt("Save timeline as (name):", "timeline");
+      if (name === null) return false;  // cancelled
+      name = name.trim();
+      if (!name) return false;
     }
+    return this._saveTimelineToServer(name);
+  }
+
+  // Save As: always prompt for a (possibly new) name, then save and remember it.
+  async handleSaveTimelineAs() {
+    let name = window.prompt("Save timeline as (name):", this.node._ltxTimelineName || "timeline");
+    if (name === null) return false;
+    name = name.trim();
+    if (!name) return false;
+    return this._saveTimelineToServer(name);
   }
 
   // Reset to an empty timeline (fresh start). Forgets the remembered save file so the next
