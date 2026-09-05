@@ -10847,6 +10847,102 @@ class TimelineEditor {
     document.body.appendChild(overlay);
   }
 
+  // --- Portable bundle (zip): timeline JSON + its media ---
+  // Reuses the exact payload from _getTimelineSavePayload() and, on import, feeds the
+  // re-pointed manifest back through _applyLoadedTimeline() so there is a single
+  // serialize/hydrate code path shared with plain Save/Load.
+
+  async handleExportBundle() {
+    let payloadObj;
+    try {
+      payloadObj = JSON.parse(this._getTimelineSavePayload());
+    } catch (e) {
+      console.error("Failed to build bundle payload:", e);
+      return;
+    }
+    payloadObj.bundleName = "ltx_director_bundle";
+
+    try {
+      const resp = await api.fetchApi("/ltx_director/save_bundle", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(payloadObj),
+      });
+      if (resp.status !== 200) {
+        console.error("Export bundle failed:", resp.status);
+        alert("Failed to export bundle. See console for details.");
+        return;
+      }
+      const missing = resp.headers.get("X-Bundle-Missing");
+      const blob = await resp.blob();
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = "ltx_director_bundle.zip";
+      a.click();
+      setTimeout(() => URL.revokeObjectURL(url), 0);
+      if (missing) {
+        alert(`Bundle exported, but ${missing} media file(s) could not be found and were skipped.`);
+      }
+      this.dismissSettingsMenu();
+    } catch (e) {
+      console.error("Export bundle error:", e);
+      alert("Failed to export bundle. See console for details.");
+    }
+  }
+
+  // After a bundle's media is staged under input/<bundleName>/, an image segment's stored
+  // imageB64 (often a /view URL pointing at the pre-bundle subfolder) no longer resolves,
+  // and 2.0 builds image previews from imageB64 (it does not rebuild them from imageFile on
+  // load). Rebuild the /view thumbnail from the re-pointed imageFile so old and new bundles
+  // both restore their previews. Video segments are skipped — 2.0 regenerates their
+  // thumbnails from the video file — and self-contained data: thumbnails are left as-is.
+  _rehydrateBundleThumbnails(manifest) {
+    const tl = manifest && manifest.timeline;
+    if (!tl || !Array.isArray(tl.segments)) return;
+    for (const seg of tl.segments) {
+      if (!seg || !seg.imageFile) continue;
+      if (seg.type === "video" || seg.type === "motion_video") continue;
+      if (typeof seg.imageB64 === "string" && seg.imageB64.startsWith("data:")) continue;
+      const parts = seg.imageFile.split(/[/\\]/);
+      const justName = parts.pop() || "";
+      const subfolder = parts.join("/");
+      seg.imageB64 = api.apiURL(`/view?filename=${encodeURIComponent(justName)}&type=input&subfolder=${encodeURIComponent(subfolder)}`);
+    }
+  }
+
+  async handleImportBundle() {
+    const input = document.createElement("input");
+    input.type = "file";
+    input.accept = ".zip,application/zip";
+    input.onchange = async (e) => {
+      const file = e.target.files?.[0];
+      if (!file) return;
+      try {
+        const body = new FormData();
+        body.append("bundle", file);
+        const resp = await api.fetchApi("/ltx_director/load_bundle", { method: "POST", body });
+        if (resp.status !== 200) {
+          console.error("Import bundle failed:", resp.status);
+          alert("Failed to import bundle. See console for details.");
+          return;
+        }
+        const data = await resp.json();
+        const manifest = data.payload || {};
+        // Media now lives under input/<bundleName>/, so any stored /view thumbnail URL is
+        // stale. Rebuild image thumbnails from the re-pointed imageFile before applying.
+        this._rehydrateBundleThumbnails(manifest);
+        // The manifest is the same shape as a saved timeline file, so reuse the loader.
+        this._applyLoadedTimeline(JSON.stringify(manifest), null);
+        this.dismissSettingsMenu();
+      } catch (err) {
+        console.error("Import bundle error:", err);
+        alert("Failed to import bundle. See console for details.");
+      }
+    };
+    input.click();
+  }
+
   _makeSettingRow(label, inputEl) {
     const row = document.createElement("div");
     row.className = "pr-settings-row";
@@ -10905,6 +11001,23 @@ class TimelineEditor {
     btnLoad.textContent = "Load Timeline";
     btnLoad.addEventListener("click", () => this.handleLoadTimeline());
     gridContainer.appendChild(btnLoad);
+
+    // Portable bundle: the timeline JSON packaged with its actual media, so it can be
+    // backed up or shared and restored on a fresh install. Layered on top of the plain
+    // Save/Load above (which reference media by filename only).
+    const btnExportBundle = document.createElement("button");
+    btnExportBundle.className = "pr-settings-toggle-btn";
+    btnExportBundle.textContent = "Export Bundle";
+    btnExportBundle.title = "Download a .zip containing the timeline and all its media";
+    btnExportBundle.addEventListener("click", () => this.handleExportBundle());
+    gridContainer.appendChild(btnExportBundle);
+
+    const btnImportBundle = document.createElement("button");
+    btnImportBundle.className = "pr-settings-toggle-btn";
+    btnImportBundle.textContent = "Import Bundle";
+    btnImportBundle.title = "Load a .zip bundle, staging its media into the input folder";
+    btnImportBundle.addEventListener("click", () => this.handleImportBundle());
+    gridContainer.appendChild(btnImportBundle);
 
     // --- Show/Hide on Node Toggle ---
     const toggleBtn = document.createElement("button");

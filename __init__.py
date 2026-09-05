@@ -7,6 +7,7 @@ from .load_video_ui import LoadVideoUI
 from .ltx_director import LTXDirector
 from .ltx_director_guide import LTXDirectorGuide, LTXDirectorCropGuides
 from . import ltx_director_timeline  # registers /ltx_director/{save,list,load}_timeline routes
+from . import ltx_director_bundle  # registers /ltx_director/{save,load}_bundle routes
 from comfy_api.latest import ComfyExtension, io
 from typing_extensions import override
 
