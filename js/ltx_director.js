@@ -10692,9 +10692,11 @@ class TimelineEditor {
       await writable.write(payload);
       await writable.close();
       this.dismissSettingsMenu();
+      return true;
     } catch (e) {
       console.error("Failed to save timeline:", e);
-      alert("Failed to save. You may need to use Save As.");
+      alert("Failed to save. You may need to use Save As (Shift-click Save).");
+      return false;
     }
   }
 
@@ -10724,11 +10726,89 @@ class TimelineEditor {
         this.currentFileHandle = null;
       }
       this.dismissSettingsMenu();
+      return true;
     } catch (e) {
       if (e.name !== "AbortError") {
         console.error("Failed to save timeline as:", e);
       }
+      return false;  // cancelled or failed — caller (Clear dialog) should not clear
     }
+  }
+
+  // Reset to an empty timeline (fresh start). Forgets the remembered save file so the next
+  // Save prompts for a new location rather than overwriting the previous timeline's file.
+  _clearTimeline() {
+    this.timeline = { segments: [], motionSegments: [], audioSegments: [] };
+    this.selectedIndex = -1;
+    this.selectedSegmentIds = [];
+    this.selectionType = "image";
+    this.currentFileHandle = null;
+    if (this.timelineDataWidget) this.timelineDataWidget.value = JSON.stringify(this.timeline);
+    this.commitChanges();
+    this.updateUIFromSelection();
+    this.render();
+  }
+
+  // Confirmation modal for Clear Timeline. "Save Timeline" saves first and only clears if
+  // the save succeeds (a cancelled save leaves the timeline intact); "Proceed" clears
+  // without saving; "Cancel" aborts.
+  _confirmClearTimeline() {
+    const overlay = document.createElement("div");
+    overlay.style.cssText = "position:fixed;inset:0;background:rgba(0,0,0,0.6);z-index:10001;display:flex;align-items:center;justify-content:center;";
+
+    const box = document.createElement("div");
+    box.className = "pr-settings-menu";
+    box.style.cssText = "min-width:300px;max-width:420px;padding:16px;box-sizing:border-box;";
+
+    const title = document.createElement("div");
+    title.className = "pr-settings-title";
+    title.textContent = "Clear Timeline?";
+    box.appendChild(title);
+
+    const msg = document.createElement("div");
+    msg.textContent = "This removes every segment and starts a fresh timeline. Unsaved changes will be lost.";
+    msg.style.cssText = "margin:8px 0 14px;line-height:1.4;font-size:12px;";
+    box.appendChild(msg);
+
+    const row = document.createElement("div");
+    row.style.cssText = "display:flex;gap:8px;justify-content:flex-end;flex-wrap:wrap;";
+
+    const mkBtn = (label) => {
+      const b = document.createElement("button");
+      b.className = "pr-settings-toggle-btn";
+      b.textContent = label;
+      b.style.width = "auto";
+      return b;
+    };
+
+    const close = () => { if (overlay.parentNode) overlay.parentNode.removeChild(overlay); };
+
+    const cancelBtn = mkBtn("Cancel");
+    cancelBtn.onclick = close;
+
+    const saveBtn = mkBtn("Save Timeline");
+    saveBtn.onclick = async () => {
+      saveBtn.disabled = true;
+      const ok = await this.handleSaveTimeline();
+      saveBtn.disabled = false;
+      if (ok) {
+        close();
+        this._clearTimeline();
+      }
+      // If the save was cancelled/failed, leave the dialog open so nothing is lost.
+    };
+
+    const proceedBtn = mkBtn("Proceed");
+    proceedBtn.style.color = "#ff6666";
+    proceedBtn.onclick = () => { close(); this._clearTimeline(); };
+
+    row.appendChild(cancelBtn);
+    row.appendChild(saveBtn);
+    row.appendChild(proceedBtn);
+    box.appendChild(row);
+    overlay.appendChild(box);
+    overlay.addEventListener("mousedown", (e) => { if (e.target === overlay) close(); });
+    document.body.appendChild(overlay);
   }
 
   _makeSettingRow(label, inputEl) {
@@ -10777,14 +10857,12 @@ class TimelineEditor {
     const btnSave = document.createElement("button");
     btnSave.className = "pr-settings-toggle-btn";
     btnSave.textContent = "Save Timeline";
-    btnSave.addEventListener("click", () => this.handleSaveTimeline());
+    btnSave.title = "Save the timeline (overwrites the current file). Shift-click to Save As (choose a new file).";
+    btnSave.addEventListener("click", (e) => {
+      if (e.shiftKey) this.handleSaveTimelineAs();
+      else this.handleSaveTimeline();
+    });
     gridContainer.appendChild(btnSave);
-
-    const btnSaveAs = document.createElement("button");
-    btnSaveAs.className = "pr-settings-toggle-btn";
-    btnSaveAs.textContent = "Save Timeline As";
-    btnSaveAs.addEventListener("click", () => this.handleSaveTimelineAs());
-    gridContainer.appendChild(btnSaveAs);
 
     const btnLoad = document.createElement("button");
     btnLoad.className = "pr-settings-toggle-btn";
@@ -10809,6 +10887,16 @@ class TimelineEditor {
       }
     });
     gridContainer.appendChild(toggleBtn);
+
+    const clearBtn = document.createElement("button");
+    clearBtn.className = "pr-settings-toggle-btn";
+    clearBtn.textContent = "Clear Timeline";
+    clearBtn.title = "Remove all segments and start a fresh timeline (asks to save first).";
+    clearBtn.addEventListener("click", () => {
+      this.dismissSettingsMenu();
+      this._confirmClearTimeline();
+    });
+    gridContainer.appendChild(clearBtn);
 
     menu.appendChild(gridContainer);
 
