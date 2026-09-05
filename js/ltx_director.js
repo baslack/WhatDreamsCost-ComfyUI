@@ -10375,7 +10375,7 @@ class TimelineEditor {
   // --- Settings Menu ---
   // Widgets that are managed by the settings menu (hidden from node by default).
   get _settingsWidgetNames() {
-    return ["display_mode", "epsilon", "divisible_by", "img_compression", "video_guide_stride"];
+    return ["display_mode", "epsilon", "divisible_by", "img_compression", "video_guide_stride", "audio_blend_secs"];
   }
 
   // Hide all settings widgets on the node (called on init).
@@ -11037,6 +11037,14 @@ class TimelineEditor {
       const strideRow = this._makeSettingRow("Video Guide Stride", createScrubbableNumberControl(strideWidget, 1, 1, 64, false));
       strideRow.title = "Default for video clips: pin every Nth latent frame so the model interpolates between anchors (fixes stair-stepping on short extensions). 1 = pin every frame. Override per-clip via a video clip's 'Set Guide Stride'.";
       menu.appendChild(strideRow);
+    }
+
+    // --- Audio Blend (crossfade seconds at audio segment boundaries) ---
+    const audioBlendWidget = this.node.widgets?.find(w => w.name === "audio_blend_secs");
+    if (audioBlendWidget) {
+      const blendRow = this._makeSettingRow("Audio Blend (s)", createScrubbableNumberControl(audioBlendWidget, 0.1, 0.0, 10.0, true));
+      blendRow.title = "Crossfade length at each audio segment's trailing edge so audio fades into generated audio instead of cutting hard. 0 = hard boundary.";
+      menu.appendChild(blendRow);
     }
 
     // --- Divider ---

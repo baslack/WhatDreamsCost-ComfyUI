@@ -986,6 +986,10 @@ class LTXDirector(io.ComfyNode):
                     "video_guide_stride", default=1, min=1, max=64, step=1, optional=True,
                     tooltip="Default guide stride for video clips: pin every Nth encoded latent frame as an anchor and let the model interpolate between them — fixes stair-stepping on short extensions. 1 = pin every frame. Override per-clip via the clip's right-click 'Set Guide Stride'. (Surfaced in the timeline gear menu.)",
                 ),
+                io.Float.Input(
+                    "audio_blend_secs", default=1.0, min=0.0, max=10.0, step=0.1, optional=True,
+                    tooltip="Crossfade length in seconds at each audio segment's trailing edge. Tapers the audio noise mask 0->1 so the model blends into freely-generated audio instead of cutting hard when a segment ends into a region with no audio. 0 = hard boundary (stock behavior).",
+                ),
             ],
             outputs=[
                 io.Model.Output(display_name="model"),
@@ -1006,7 +1010,7 @@ class LTXDirector(io.ComfyNode):
                 custom_width=768, custom_height=512, resize_method="maintain aspect ratio",
                 divisible_by=32, img_compression=0, audio_vae=None, optional_latent=None,
                 use_custom_audio=False, inpaint_audio=True, use_custom_motion=True, override_audio=False,
-                video_guide_stride=1) -> io.NodeOutput:
+                video_guide_stride=1, audio_blend_secs=1.0) -> io.NodeOutput:
 
         # Parse timeline data
         try:
@@ -1288,7 +1292,12 @@ class LTXDirector(io.ComfyNode):
                                 gap_mask[:, start_idx:end_idx, :] = 1.0
                         else:
                             gap_mask = torch.ones((B, F_len, H_len), dtype=torch.float32, device=latent_samples.device)
-                            
+
+                            # Blend ramp width in audio-latent positions (audio_blend_secs).
+                            _total_sec = ltxv_length / float(frame_rate) if frame_rate else 0.0
+                            _audio_latent_fps = (F_len / _total_sec) if _total_sec > 0 else 0.0
+                            blend_frames = max(0, int(round(float(audio_blend_secs) * _audio_latent_fps)))
+
                             audio_segs_key = "motionSegments" if override_audio else "audioSegments"
                             file_key = "videoFile" if override_audio else "audioFile"
                             for seg in tdata.get(audio_segs_key, []):
@@ -1312,7 +1321,19 @@ class LTXDirector(io.ComfyNode):
                                 start_idx = int((start_sec / total_sec) * F_len)
                                 end_idx = int(((start_sec + len_sec) / total_sec) * F_len)
                                 gap_mask[:, start_idx:end_idx, :] = 0.0
-                                
+
+                                # Trailing blend ramp (audio_blend_secs): taper the mask
+                                # 0->1 over the last blend_frames positions of this segment
+                                # so preserved audio fades into freely-generated audio
+                                # instead of cutting hard when the next region has no audio.
+                                if blend_frames > 0:
+                                    s = max(0, min(F_len, start_idx))
+                                    e = max(0, min(F_len, end_idx))
+                                    ramp_s = max(s, e - blend_frames)
+                                    ramp_len = e - ramp_s
+                                    for i in range(ramp_len):
+                                        gap_mask[:, ramp_s + i, :] = (i + 1) / (ramp_len + 1)
+
                         if inpaint_audio:
                             # Generate new audio in the gaps, preserve custom audio segments
                             mask = gap_mask
