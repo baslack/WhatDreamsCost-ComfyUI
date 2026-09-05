@@ -651,6 +651,18 @@ const ICONS = {
 };
 
 // --- Data Models ---
+
+// JSON.stringify replacer: never persist inlined base64 (data:) blobs. imageB64 is only a
+// regenerable thumbnail cache — video clips rebuild it from the file on load and the
+// backend reads the media file, not the thumbnail — so embedding base64 just bloats the
+// timeline JSON (and every prompt payload). Path (/view) references are kept untouched.
+function _stripInlineBase64(key, value) {
+  if (key === "imageB64" && typeof value === "string" && value.startsWith("data:")) {
+    return undefined;
+  }
+  return value;
+}
+
 function parseInitial(jsonStr) {
   let parsed = {
     segments: [],
@@ -8951,7 +8963,7 @@ class TimelineEditor {
       })
     };
 
-    const jsonStr = JSON.stringify(toSave);
+    const jsonStr = JSON.stringify(toSave, _stripInlineBase64);
     console.log("[LTXDirector debug] commitChanges: saving timelineDataWidget value:", jsonStr);
 
     const updateWidgetValue = (w, val) => {
@@ -10580,7 +10592,7 @@ class TimelineEditor {
         }
       }
 
-      if (this.timelineDataWidget) this.timelineDataWidget.value = JSON.stringify(data.timeline || data);
+      if (this.timelineDataWidget) this.timelineDataWidget.value = JSON.stringify(data.timeline || data, _stripInlineBase64);
       this.timeline = parseInitial(this.timelineDataWidget.value);
       this.mainTrackEnabled = this.timeline.mainTrackEnabled !== false;
       this.audioTrackEnabled = this.timeline.audioTrackEnabled !== false;
@@ -10721,7 +10733,7 @@ class TimelineEditor {
           return rest;
         })
       }
-    }, null, 2);
+    }, _stripInlineBase64, 2);
   }
 
   // POST the timeline JSON to the ComfyUI backend under `name`. Server-side so it works in
